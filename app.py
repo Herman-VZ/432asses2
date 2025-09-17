@@ -10,6 +10,17 @@ import concurrent.futures
 import logging
 from s3_helper import S3Helper
 from dynamodb_helper import DynamoDBHelper
+import logging
+import sys
+
+# Set up logging to output to stdout (Docker captures this)
+logging.basicConfig(
+    level=logging.DEBUG,  # Change to DEBUG for more detailed logs
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
 
 app = Flask(__name__)
 

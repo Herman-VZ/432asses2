@@ -30,4 +30,4 @@ COPY . .
 EXPOSE 8080
 
 # Run with Gunicorn (4 workers, uvicorn worker class)
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "app:app", "--bind", "0.0.0.0:8080"]
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "app:app"]
