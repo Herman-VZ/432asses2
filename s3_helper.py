@@ -3,6 +3,8 @@ import io
 from botocore.exceptions import NoCredentialsError, ClientError
 import logging
 import sys
+import time
+import random
 
 # Set up logging to output to stdout (Docker captures this)
 logging.basicConfig(
@@ -34,46 +36,68 @@ class S3Helper:
             raise
     
     def _create_bucket_if_not_exists(self, bucket_name):
-        """Create S3 bucket if it doesn't exist"""
+        """Create S3 bucket if it doesn't exist, handle race conditions safely"""
         try:
-            # Check if bucket exists
+            # Check if bucket exists (owned by you or someone else)
             self.s3_client.head_bucket(Bucket=bucket_name)
             logger.info(f"Bucket {bucket_name} already exists")
         except ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                # Bucket doesn't exist, create it
+            error_code = e.response["Error"]["Code"]
+
+            if error_code in ("404", "NoSuchBucket"):
                 try:
                     logger.info(f"Creating bucket {bucket_name}...")
-                    response = self.s3_client.create_bucket(
+                    self.s3_client.create_bucket(
                         Bucket=bucket_name,
                         CreateBucketConfiguration={'LocationConstraint': 'ap-southeast-2'}
                     )
-                    logger.info(f"Bucket {bucket_name} created successfully: {response.get('Location')}")
+                    logger.info(f"Bucket {bucket_name} created successfully")
+                except self.s3_client.exceptions.BucketAlreadyOwnedByYou:
+                    logger.info(f"Bucket {bucket_name} already owned by you (safe to ignore)")
+                except self.s3_client.exceptions.BucketAlreadyExists:
+                    logger.warning(f"Bucket {bucket_name} already exists globally — using it")
                 except ClientError as create_error:
-                    logger.error(f"Error creating bucket {bucket_name}: {create_error}")
-                    raise
+                    if create_error.response["Error"]["Code"] in ("BucketAlreadyOwnedByYou", "OperationAborted"):
+                        logger.info(f"Bucket {bucket_name} already created by another worker")
+                    else:
+                        logger.error(f"Unexpected error creating bucket {bucket_name}: {create_error}")
+                        raise
             else:
                 logger.error(f"Error checking bucket {bucket_name}: {e}")
                 raise
+
     
-    def _tag_bucket(self, bucket_name):
-        """Tag S3 bucket with required tags"""
-        try:
-            qut_username = 'n11957948@qut.edu.au'
-            purpose = 'assessment-2'
-            
-            response = self.s3_client.put_bucket_tagging(
-                Bucket=bucket_name,
-                Tagging={
-                    'TagSet': [
-                        {'Key': 'qut-username', 'Value': qut_username},
-                        {'Key': 'purpose', 'Value': purpose}
-                    ]
-                }
-            )
-            logger.info(f"Bucket {bucket_name} tagged successfully")
-        except ClientError as e:
-            logger.error(f"Error tagging bucket {bucket_name}: {e}")
+    def _tag_bucket(self, bucket_name, max_retries=5):
+        """Tag S3 bucket with required tags, with retry/backoff to handle race conditions"""
+        qut_username = 'n11957948@qut.edu.au'
+        purpose = 'assessment-2'
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.s3_client.put_bucket_tagging(
+                    Bucket=bucket_name,
+                    Tagging={
+                        'TagSet': [
+                            {'Key': 'qut-username', 'Value': qut_username},
+                            {'Key': 'purpose', 'Value': purpose}
+                        ]
+                    }
+                )
+                logger.info(f"Bucket {bucket_name} tagged successfully")
+                return
+            except ClientError as e:
+                code = e.response["Error"]["Code"]
+                if code == "OperationAborted" and attempt < max_retries:
+                    wait = (2 ** attempt) + random.random()
+                    logger.warning(
+                        f"Tagging conflict for {bucket_name}, retrying in {wait:.1f}s "
+                        f"(attempt {attempt}/{max_retries})"
+                    )
+                    time.sleep(wait)
+                    continue
+                else:
+                    logger.error(f"Error tagging bucket {bucket_name}: {e}")
+                    return
     
 
     

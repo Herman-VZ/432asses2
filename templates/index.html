@@ -36,24 +36,6 @@
         
         <div class="api-tester">
             <h2>API Endpoint Tester</h2>
-<!--             
-            <div class="endpoint">
-                <h3>1. Test Root Endpoint</h3>
-                <button onclick="testEndpoint('/api/', 'GET')">Test /api/</button>
-                <div class="result" id="result-root"></div>
-            </div>
-            
-            <div class="endpoint">
-                <h3>2. Test Protected Endpoint</h3>
-                <button onclick="testEndpoint('/api/protected', 'GET')">Test /api/protected</button>
-                <div class="result" id="result-protected"></div>
-            </div>
-            
-            <div class="endpoint">
-                <h3>3. Test Process Endpoint</h3>
-                <button onclick="testEndpoint('/api/process', 'POST')">Test /api/process</button>
-                <div class="result" id="result-process"></div>
-            </div> -->
             
             <div class="endpoint">
                 <h3>4. Test Image Filtering</h3>
@@ -410,13 +392,24 @@
             resultDiv.innerHTML = 'Loading...';
 
             const token = '{{ token }}';
+            
             fetch('/api/my-images', {
                 method: 'GET',
                 headers: {
-                    'Authorization': `Bearer ${token}`
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
                 }
             })
-            .then(response => response.json())
+            .then(response => {
+                // Check if response is JSON
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    return response.text().then(text => {
+                        throw new Error(`Expected JSON but got: ${text.substring(0, 100)}`);
+                    });
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.length === 0) {
                     resultDiv.innerHTML = 'No images found.';
@@ -437,9 +430,16 @@
                     container.appendChild(info);
 
                     const img = document.createElement('img');
-                    img.src = imgObj.image;
+                    img.src = imgObj.image_url;
                     img.style.maxWidth = '200px';
                     img.style.display = 'block';
+                    img.onerror = function() {
+                        this.style.display = 'none';
+                        const errorMsg = document.createElement('p');
+                        errorMsg.textContent = 'Failed to load image. URL may have expired.';
+                        errorMsg.style.color = 'red';
+                        container.appendChild(errorMsg);
+                    };
                     container.appendChild(img);
 
                     const downloadBtn = document.createElement('button');
@@ -451,7 +451,8 @@
                 });
             })
             .catch(error => {
-                resultDiv.innerHTML = `Error: ${error}`;
+                resultDiv.innerHTML = `Error: ${error.message}`;
+                console.error('Full error:', error);
             });
         }
     </script>
