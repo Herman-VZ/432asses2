@@ -421,22 +421,22 @@ def api_batch_filter_images():
 @cognito_jwt_required
 def api_my_images():
     current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
-    
+
     # Get user's images from DynamoDB
     user_images = db_helper.get_user_images(current_user)
-    
+
     # Generate presigned URLs for each image
     images_with_urls = []
     for img in user_images:
-        image_url = s3_helper.generate_presigned_url(img['processed_key'], is_processed=True)
+        image_url = s3_helper.generate_presigned_url(img['ImageID'], is_processed=True)
         images_with_urls.append({
-            "image_id": img['image_id'],
-            "filter": img['filter'],
-            "strength": img['strength'],
-            "size_multiplier": img['size_multiplier'],
+            "image_id": img['ImageID'],
+            "filter": img['Filter'],
+            "strength": img['Strength'],
+            "size_multiplier": img['SizeMultiplier'],
             "image_url": image_url
         })
-    
+
     return jsonify(images_with_urls), 200
 
 @app.route('/api/download-image/<image_id>', methods=['GET'])
