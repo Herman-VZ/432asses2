@@ -13,7 +13,25 @@ logger.setLevel(logging.INFO)
 class DynamoDBHelper:
     def __init__(self):
         try:
-            self.dynamodb = boto3.resource('dynamodb', region_name='ap-southeast-2')
+            self.region = 'ap-southeast-2'
+            
+            # Try to get credentials from Secrets Manager
+            secrets_helper = SecretsManagerHelper()
+            credentials = secrets_helper.get_database_credentials()
+            
+            if credentials and credentials.get('access_key_id') and credentials.get('secret_access_key'):
+                # Use credentials from Secrets Manager
+                self.dynamodb = boto3.resource('dynamodb',
+                    aws_access_key_id=credentials['access_key_id'],
+                    aws_secret_access_key=credentials['secret_access_key'],
+                    region_name=self.region
+                )
+                logger.info("Using credentials from Secrets Manager for DynamoDB")
+            else:
+                # Fall back to default credentials (IAM role)
+                self.dynamodb = boto3.resource('dynamodb', region_name=self.region)
+                logger.info("Using default IAM role credentials for DynamoDB")
+            
             self.table_name = 'ImageMetadata'
             self.table = self.dynamodb.Table(self.table_name)
             
@@ -151,4 +169,19 @@ class DynamoDBHelper:
             return response.get('Attributes', {})
         except ClientError as e:
             logger.error(f"Error updating item in DynamoDB: {e}")
+            return None
+        
+    # Add this method to both S3Helper and DynamoDBHelper classes
+    def _get_database_credentials(self):
+        """Get database credentials from Secrets Manager"""
+        try:
+            secrets_client = boto3.client('secretsmanager', region_name=self.region)
+            response = secrets_client.get_secret_value(
+                SecretId='cab432/database/credentials'
+            )
+            secret_data = json.loads(response['SecretString'])
+            return secret_data
+        except Exception as e:
+            logger.warning(f"Failed to get credentials from Secrets Manager: {e}")
+            # Fall back to default credentials
             return None

@@ -17,10 +17,28 @@ logger = logging.getLogger(__name__)
 class S3Helper:
     def __init__(self):
         try:
+            self.region = 'ap-southeast-2'
             logger.info("Initializing S3 helper...")
-            self.s3_client = boto3.client('s3', region_name='ap-southeast-2')
+            self.region = 'ap-southeast-2'
             self.original_bucket = 'n11957948-original-images'
             self.processed_bucket = 'n11957948-processed-images'
+            
+            # Try to get credentials from Secrets Manager
+            secrets_helper = SecretsManagerHelper()
+            credentials = secrets_helper.get_database_credentials()
+            
+            if credentials and credentials.get('access_key_id') and credentials.get('secret_access_key'):
+                # Use credentials from Secrets Manager
+                self.s3_client = boto3.client('s3',
+                    aws_access_key_id=credentials['access_key_id'],
+                    aws_secret_access_key=credentials['secret_access_key'],
+                    region_name=self.region
+                )
+                logger.info("Using credentials from Secrets Manager for S3")
+            else:
+                # Fall back to default credentials (IAM role)
+                self.s3_client = boto3.client('s3', region_name=self.region)
+                logger.info("Using default IAM role credentials for S3")
             
             # Create buckets if they don't exist
             self._create_bucket_if_not_exists(self.original_bucket)
@@ -211,3 +229,17 @@ class S3Helper:
         except Exception as e:
             logger.error(f"Unexpected error checking image existence: {e}")
             return False
+        
+    def _get_database_credentials(self):
+        """Get database credentials from Secrets Manager"""
+        try:
+            secrets_client = boto3.client('secretsmanager', region_name=self.region)
+            response = secrets_client.get_secret_value(
+                SecretId='cab432/database/credentials'
+            )
+            secret_data = json.loads(response['SecretString'])
+            return secret_data
+        except Exception as e:
+            logger.warning(f"Failed to get credentials from Secrets Manager: {e}")
+            # Fall back to default credentials
+            return None

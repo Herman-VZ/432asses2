@@ -22,10 +22,33 @@
                 <input type="password" name="password" placeholder="Password" required>
                 <button type="submit">Login</button>
             </form>
+            <div class="signup-section" style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 4px;">
+                <h3>New User? Sign Up</h3>
+                <form id="signupForm">
+                    <input type="text" id="signupUsername" placeholder="Username" required style="width: 100%; padding: 8px; margin: 5px 0;">
+                    <input type="email" id="signupEmail" placeholder="Email" required style="width: 100%; padding: 8px; margin: 5px 0;">
+                    <input type="password" id="signupPassword" placeholder="Password" required style="width: 100%; padding: 8px; margin: 5px 0;">
+                    <button type="button" onclick="signup()" style="width: 100%; padding: 10px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                        Sign Up
+                    </button>
+                </form>
+                <div id="signupResult" style="margin-top: 10px;"></div>
+            </div>
+
+            <div class="confirmation-section" id="confirmationSection" style="display: none; margin-top: 20px; padding: 15px; background: #e9ecef; border-radius: 4px;">
+                <h3>Confirm Your Email</h3>
+                <form id="confirmForm">
+                    <input type="text" id="confirmUsername" placeholder="Username" required style="width: 100%; padding: 8px; margin: 5px 0;">
+                    <input type="text" id="confirmCode" placeholder="Confirmation Code" required style="width: 100%; padding: 8px; margin: 5px 0;">
+                    <button type="button" onclick="confirmSignup()" style="width: 100%; padding: 10px; background: #17a2b8; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                        Confirm
+                    </button>
+                </form>
+                <div id="confirmResult" style="margin-top: 10px;"></div>
+            </div>
             <div class="demo-accounts">
-                <p><strong>Demo Accounts:</strong></p>
-                <p>user1 / password1</p>
-                <p>admin1 / adminpass</p>
+                <p><strong>Note:</strong> You need to create an account first using the signup form above.</p>
+                <p>Check your email for the confirmation code after signing up.</p>
             </div>
         </div>
         {% else %}
@@ -172,7 +195,88 @@
                 resultDiv.innerHTML = `Error: ${error}`;
             });
         }
-        
+
+        // Signup function
+        function signup() {
+            const username = document.getElementById('signupUsername').value;
+            const email = document.getElementById('signupEmail').value;
+            const password = document.getElementById('signupPassword').value;
+            const resultDiv = document.getElementById('signupResult');
+            
+            if (!username || !email || !password) {
+                resultDiv.innerHTML = 'Please fill all fields';
+                return;
+            }
+            
+            resultDiv.innerHTML = 'Signing up...';
+            
+            fetch('/api/auth/signup', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    username: username,
+                    email: email,
+                    password: password
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.msg) {
+                    resultDiv.innerHTML = `Error: ${data.msg}`;
+                } else {
+                    resultDiv.innerHTML = `Success! ${data.message}`;
+                    // Show confirmation section
+                    document.getElementById('confirmUsername').value = username;
+                    document.getElementById('confirmationSection').style.display = 'block';
+                }
+            })
+            .catch(error => {
+                resultDiv.innerHTML = `Error: ${error}`;
+            });
+        }
+
+        // Confirm signup function
+        function confirmSignup() {
+            const username = document.getElementById('confirmUsername').value;
+            const code = document.getElementById('confirmCode').value;
+            const resultDiv = document.getElementById('confirmResult');
+            
+            if (!username || !code) {
+                resultDiv.innerHTML = 'Please fill all fields';
+                return;
+            }
+            
+            resultDiv.innerHTML = 'Confirming...';
+            
+            fetch('/api/auth/confirm', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    username: username,
+                    confirmation_code: code
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.msg) {
+                    resultDiv.innerHTML = `Error: ${data.msg}`;
+                } else {
+                    resultDiv.innerHTML = 'Success! Your account is confirmed. You can now login.';
+                    // Reload page after 2 seconds to show login form
+                    setTimeout(() => {
+                        location.reload();
+                    }, 2000);
+                }
+            })
+            .catch(error => {
+                resultDiv.innerHTML = `Error: ${error}`;
+            });
+        }
+
         function testImageFilter() {
             const resultDiv = document.getElementById('result-image');
             resultDiv.innerHTML = 'Testing...';

@@ -29,5 +29,11 @@ COPY . .
 # Expose port
 EXPOSE 8080
 
+# Add environment variables for Cognito (these will be set at runtime)
+ENV COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID}
+ENV COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID}
+ENV COGNITO_CLIENT_SECRET=${COGNITO_CLIENT_SECRET}
+ENV AWS_REGION=ap-southeast-2
+
 # Run with Gunicorn (4 workers, uvicorn worker class)
 CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "app:app"]

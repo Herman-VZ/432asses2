@@ -10,7 +10,7 @@ import concurrent.futures
 import logging
 from s3_helper import S3Helper
 from dynamodb_helper import DynamoDBHelper
-import logging
+from cognito_helper import CognitoHelper
 import sys
 
 # Set up logging to output to stdout (Docker captures this)
@@ -21,7 +21,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 app = Flask(__name__)
 
 # Configuration
@@ -29,22 +28,31 @@ app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET', 'super-secret-key')
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET', 'flask-super-secret-key')
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+app.config['JWT_ALGORITHM'] = 'RS256'  # Cognito uses RS256
 
 jwt = JWTManager(app)
-
-# In-memory user storage (to be replaced with Cognito by Person 2)
-users = {
-    "user1": {"password": "password1", "role": "user"},
-    "admin1": {"password": "adminpass", "role": "admin"}
-}
 
 # Initialize AWS helpers
 s3_helper = S3Helper()
 db_helper = DynamoDBHelper()
+cognito_helper = CognitoHelper()
+
+# Custom JWT configuration for Cognito
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload):
+    # For Cognito, we rely on token expiration and signature verification
+    return False
+
+@jwt.user_identity_loader
+def user_identity_lookup(identity):
+    return identity
+
+@jwt.user_lookup_loader
+def user_lookup_callback(_jwt_header, jwt_data):
+    # Extract user information from Cognito JWT
+    identity = jwt_data.get("sub")
+    username = jwt_data.get("cognito:username") or jwt_data.get("username")
+    return {"user_id": identity, "username": username}
 
 # Helper function to process a single image
 def process_single_image(file, filter_type, strength, size_multiplier, current_user):
@@ -137,7 +145,7 @@ def process_single_image(file, filter_type, strength, size_multiplier, current_u
             "error": f"Error processing image: {str(e)}"
         }
 
-# Web interface routes (unchanged)
+# Web interface routes
 @app.route('/')
 def index():
     return render_template('index.html', token=session.get('token'), current_user=session.get('username'))
@@ -147,21 +155,38 @@ def web_login():
     username = request.form.get('username')
     password = request.form.get('password')
     
-    if username in users and users[username]['password'] == password:
-        # Create JWT token
-        access_token = create_access_token(
-            identity=username,
-            expires_delta=datetime.timedelta(hours=24)
-        )
-        session['token'] = access_token
-        session['username'] = username
-        return redirect(url_for('index'))
+    if not username or not password:
+        return render_template('index.html', error="Username and password required")
+    
+    result = cognito_helper.authenticate(username, password)
+    
+    if result['success']:
+        try:
+            # Verify the token and get user claims
+            claims = cognito_helper.verify_token(result['id_token'])
+            
+            # Create Flask-JWT token for session management
+            access_token = create_access_token(
+                identity=claims['sub'],
+                expires_delta=datetime.timedelta(hours=24)
+            )
+            
+            session['token'] = access_token
+            session['cognito_token'] = result['id_token']
+            session['username'] = claims.get('cognito:username', username)
+            
+            return redirect(url_for('index'))
+            
+        except Exception as e:
+            logger.error(f"Token verification failed: {e}")
+            return render_template('index.html', error="Authentication failed")
     else:
         return render_template('index.html', error="Invalid credentials")
 
 @app.route('/web/logout')
 def web_logout():
     session.pop('token', None)
+    session.pop('cognito_token', None)
     session.pop('username', None)
     return redirect(url_for('index'))
 
@@ -179,6 +204,55 @@ def web_test_endpoints():
 def api_root():
     return jsonify({"message": "Welcome to the CAB432 API Server"})
 
+# New Cognito authentication endpoints
+@app.route('/api/auth/signup', methods=['POST'])
+def api_signup():
+    if not request.is_json:
+        return jsonify({"msg": "Missing JSON in request"}), 400
+        
+    username = request.json.get('username', None)
+    password = request.json.get('password', None)
+    email = request.json.get('email', None)
+    
+    if not username or not password or not email:
+        return jsonify({"msg": "Missing required fields"}), 400
+        
+    # Validate password strength (Cognito has requirements)
+    if len(password) < 8:
+        return jsonify({"msg": "Password must be at least 8 characters"}), 400
+        
+    result = cognito_helper.sign_up(username, password, email)
+    
+    if result['success']:
+        return jsonify({
+            "message": "User registered successfully. Please check your email for confirmation code.",
+            "user_sub": result['user_sub']
+        }), 200
+    else:
+        return jsonify({
+            "msg": f"Sign up failed: {result.get('error_message', 'Unknown error')}"
+        }), 400
+
+@app.route('/api/auth/confirm', methods=['POST'])
+def api_confirm_signup():
+    if not request.is_json:
+        return jsonify({"msg": "Missing JSON in request"}), 400
+        
+    username = request.json.get('username', None)
+    confirmation_code = request.json.get('confirmation_code', None)
+    
+    if not username or not confirmation_code:
+        return jsonify({"msg": "Missing username or confirmation code"}), 400
+        
+    result = cognito_helper.confirm_sign_up(username, confirmation_code)
+    
+    if result['success']:
+        return jsonify({"msg": "User confirmed successfully"}), 200
+    else:
+        return jsonify({
+            "msg": f"Confirmation failed: {result.get('error_message', 'Unknown error')}"
+        }), 400
+
 @app.route('/api/auth/login', methods=['POST'])
 def api_login():
     if not request.is_json:
@@ -190,21 +264,70 @@ def api_login():
     if not username or not password:
         return jsonify({"msg": "Missing username or password"}), 400
         
-    if username not in users or users[username]['password'] != password:
-        return jsonify({"msg": "Bad username or password"}), 401
-        
-    access_token = create_access_token(
-        identity=username,
-        expires_delta=datetime.timedelta(hours=24)
-    )
+    result = cognito_helper.authenticate(username, password)
     
-    return jsonify(access_token=access_token), 200
+    if result['success']:
+        # Verify the token to ensure it's valid
+        try:
+            claims = cognito_helper.verify_token(result['id_token'])
+            
+            # Create a Flask-JWT token for compatibility with existing code
+            access_token = create_access_token(
+                identity=claims['sub'],
+                expires_delta=datetime.timedelta(seconds=result['expires_in'])
+            )
+            
+            return jsonify({
+                "access_token": access_token,
+                "id_token": result['id_token'],
+                "token_type": "Bearer",
+                "expires_in": result['expires_in']
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Token verification failed: {e}")
+            return jsonify({"msg": "Authentication failed: token verification error"}), 401
+    else:
+        return jsonify({
+            "msg": f"Authentication failed: {result.get('error_message', 'Unknown error')}"
+        }), 401
+
+@app.route('/api/auth/userinfo', methods=['GET'])
+@jwt_required()
+def api_user_info():
+    try:
+        # Get the Cognito access token from header
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            cognito_token = auth_header[7:]
+            user_info = cognito_helper.get_user_info(cognito_token)
+            return jsonify(user_info), 200
+        else:
+            return jsonify({"msg": "Authorization header missing or invalid"}), 401
+    except Exception as e:
+        logger.error(f"Failed to get user info: {e}")
+        return jsonify({"msg": "Failed to retrieve user information"}), 500
 
 @app.route('/api/protected', methods=['GET'])
 @jwt_required()
 def api_protected():
     current_user = get_jwt_identity()
-    return jsonify(logged_in_as=current_user, message="This is a protected endpoint"), 200
+    
+    # Try to get additional info from Cognito if available
+    cognito_info = {}
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        try:
+            cognito_token = auth_header[7:]
+            cognito_info = cognito_helper.get_user_info(cognito_token)
+        except:
+            pass  # Fall back to basic info
+    
+    return jsonify({
+        "logged_in_as": current_user,
+        "cognito_info": cognito_info,
+        "message": "This is a protected endpoint"
+    }), 200
 
 @app.route('/api/process', methods=['POST'])
 @jwt_required()
@@ -369,7 +492,7 @@ def api_download_image(image_id):
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
-    """Health check endpoint to verify S3 and DynamoDB connectivity"""
+    """Health check endpoint to verify all services including Cognito"""
     try:
         # Test S3 connectivity
         s3_test = s3_helper.image_exists("test", is_processed=False)
@@ -377,10 +500,18 @@ def api_health():
         # Test DynamoDB connectivity
         db_test = db_helper.get_image_metadata("test")
         
+        # Test Cognito connectivity by trying to get JWKS
+        try:
+            cognito_helper._get_jwks()
+            cognito_connected = True
+        except:
+            cognito_connected = False
+        
         return jsonify({
             "status": "healthy",
             "s3_connected": True,
             "dynamodb_connected": True,
+            "cognito_connected": cognito_connected,
             "timestamp": datetime.datetime.utcnow().isoformat()
         }), 200
     except Exception as e:
