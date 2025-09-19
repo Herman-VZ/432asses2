@@ -1,3 +1,4 @@
+import json
 import boto3
 import io
 from botocore.exceptions import NoCredentialsError, ClientError
@@ -5,6 +6,7 @@ import logging
 import sys
 import time
 import random
+from secrets_manager_helper import SecretsManagerHelper
 
 # Set up logging to output to stdout (Docker captures this)
 logging.basicConfig(

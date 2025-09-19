@@ -1,3 +1,4 @@
+import json
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -5,6 +6,7 @@ import logging
 from datetime import datetime
 import uuid
 from decimal import Decimal
+from secrets_manager_helper import SecretsManagerHelper
 
 # Set up logging
 logger = logging.getLogger(__name__)

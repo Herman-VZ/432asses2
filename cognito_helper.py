@@ -17,9 +17,9 @@ class CognitoHelper:
     def __init__(self):
         try:
             self.region = 'ap-southeast-2'
-            self.user_pool_id = os.environ.get('ap-southeast-2_zLuXUx1Wg')
-            self.client_id = os.environ.get('2o8r4mjegq1katt4pftqgjvcfj')
-            self.client_secret = os.environ.get('14q3jsmp0vq5ugu4ofmhtjn48mfmhvtlmitl1llk5rsds35tvt81')
+            self.user_pool_id = os.environ.get('COGNITO_USER_POOL_ID')
+            self.client_id = os.environ.get('COGNITO_CLIENT_ID')
+            self.client_secret = os.environ.get('COGNITO_CLIENT_SECRET')
             
             if not all([self.user_pool_id, self.client_id]):
                 raise ValueError("Cognito configuration missing. Set COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID environment variables.")

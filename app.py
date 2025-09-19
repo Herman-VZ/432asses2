@@ -1,5 +1,5 @@
-from flask import Flask, request, jsonify, render_template, session, redirect, url_for, send_file
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for, send_file, g
+from functools import wraps
 import datetime
 import os
 from PIL import Image, ImageFilter, ImageEnhance
@@ -24,35 +24,34 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET', 'super-secret-key')
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET', 'flask-super-secret-key')
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['JWT_ALGORITHM'] = 'RS256'  # Cognito uses RS256
-
-jwt = JWTManager(app)
 
 # Initialize AWS helpers
 s3_helper = S3Helper()
 db_helper = DynamoDBHelper()
 cognito_helper = CognitoHelper()
 
-# Custom JWT configuration for Cognito
-@jwt.token_in_blocklist_loader
-def check_if_token_revoked(jwt_header, jwt_payload):
-    # For Cognito, we rely on token expiration and signature verification
-    return False
-
-@jwt.user_identity_loader
-def user_identity_lookup(identity):
-    return identity
-
-@jwt.user_lookup_loader
-def user_lookup_callback(_jwt_header, jwt_data):
-    # Extract user information from Cognito JWT
-    identity = jwt_data.get("sub")
-    username = jwt_data.get("cognito:username") or jwt_data.get("username")
-    return {"user_id": identity, "username": username}
+# Custom decorator for Cognito JWT verification
+def cognito_jwt_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({"msg": "Missing or invalid Authorization header"}), 401
+        
+        token = auth_header[7:]
+        try:
+            # Verify using Cognito helper
+            claims = cognito_helper.verify_token(token)
+            # Store user info in flask.g for access in routes
+            g.cognito_user = claims
+            return f(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Token verification failed: {e}")
+            return jsonify({"msg": f"Token verification failed: {str(e)}"}), 401
+    return decorated_function
 
 # Helper function to process a single image
 def process_single_image(file, filter_type, strength, size_multiplier, current_user):
@@ -165,13 +164,8 @@ def web_login():
             # Verify the token and get user claims
             claims = cognito_helper.verify_token(result['id_token'])
             
-            # Create Flask-JWT token for session management
-            access_token = create_access_token(
-                identity=claims['sub'],
-                expires_delta=datetime.timedelta(hours=24)
-            )
-            
-            session['token'] = access_token
+            # Use Cognito token directly (no Flask-JWT)
+            session['token'] = result['id_token']
             session['cognito_token'] = result['id_token']
             session['username'] = claims.get('cognito:username', username)
             
@@ -191,9 +185,9 @@ def web_logout():
     return redirect(url_for('index'))
 
 @app.route('/web/test-endpoints')
-@jwt_required()
+@cognito_jwt_required
 def web_test_endpoints():
-    current_user = get_jwt_identity()
+    current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
     return render_template('index.html', 
                          token=session.get('token'),
                          current_user=current_user,
@@ -271,14 +265,8 @@ def api_login():
         try:
             claims = cognito_helper.verify_token(result['id_token'])
             
-            # Create a Flask-JWT token for compatibility with existing code
-            access_token = create_access_token(
-                identity=claims['sub'],
-                expires_delta=datetime.timedelta(seconds=result['expires_in'])
-            )
-            
             return jsonify({
-                "access_token": access_token,
+                "access_token": result['access_token'],
                 "id_token": result['id_token'],
                 "token_type": "Bearer",
                 "expires_in": result['expires_in']
@@ -293,10 +281,10 @@ def api_login():
         }), 401
 
 @app.route('/api/auth/userinfo', methods=['GET'])
-@jwt_required()
+@cognito_jwt_required
 def api_user_info():
     try:
-        # Get the Cognito access token from header
+        # Get user info from Cognito
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):
             cognito_token = auth_header[7:]
@@ -309,9 +297,9 @@ def api_user_info():
         return jsonify({"msg": "Failed to retrieve user information"}), 500
 
 @app.route('/api/protected', methods=['GET'])
-@jwt_required()
+@cognito_jwt_required
 def api_protected():
-    current_user = get_jwt_identity()
+    current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
     
     # Try to get additional info from Cognito if available
     cognito_info = {}
@@ -330,9 +318,9 @@ def api_protected():
     }), 200
 
 @app.route('/api/process', methods=['POST'])
-@jwt_required()
+@cognito_jwt_required
 def api_process():
-    current_user = get_jwt_identity()
+    current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
     # Simulate CPU-intensive work
     import time
     time.sleep(2)  # Simulate processing time
@@ -343,9 +331,9 @@ def api_process():
     }), 200
 
 @app.route('/api/filter-image', methods=['POST'])
-@jwt_required()
+@cognito_jwt_required
 def api_filter_image():
-    current_user = get_jwt_identity()
+    current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
     
     if 'image' not in request.files:
         return jsonify({"error": "No image file provided"}), 400
@@ -375,9 +363,9 @@ def api_filter_image():
             }), 200
 
 @app.route('/api/batch-filter-images', methods=['POST'])
-@jwt_required()
+@cognito_jwt_required
 def api_batch_filter_images():
-    current_user = get_jwt_identity()
+    current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
     
     if 'images' not in request.files:
         return jsonify({"error": "No image files provided"}), 400
@@ -430,9 +418,9 @@ def api_batch_filter_images():
     }), 200
 
 @app.route('/api/my-images', methods=['GET'])
-@jwt_required()
+@cognito_jwt_required
 def api_my_images():
-    current_user = get_jwt_identity()
+    current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
     
     # Get user's images from DynamoDB
     user_images = db_helper.get_user_images(current_user)
@@ -458,11 +446,11 @@ def api_download_image(image_id):
         return jsonify({"error": "Missing token"}), 401
     
     try:
-        from flask_jwt_extended import decode_token
-        decode_token(token)
-    except:
-        return jsonify({"error": "Invalid token"}), 401
-    
+        claims = cognito_helper.verify_token(token)
+    except Exception as e:
+            logger.error(f"Token verification failed: {e}")
+            return jsonify({"error": "Invalid token"}), 401
+        
     # Get image directly from S3
     image_data = s3_helper.download_image(image_id, is_processed=True)
     
