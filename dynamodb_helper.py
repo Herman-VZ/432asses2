@@ -179,7 +179,7 @@ class DynamoDBHelper:
         try:
             secrets_client = boto3.client('secretsmanager', region_name=self.region)
             response = secrets_client.get_secret_value(
-                SecretId='cab432/database/credentials'
+                SecretId='n11962810-asses2-secret'
             )
             secret_data = json.loads(response['SecretString'])
             return secret_data

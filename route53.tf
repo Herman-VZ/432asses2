@@ -1,9 +1,9 @@
 resource "aws_route53_record" "api" {
-  zone_id = "Z123456789ABC"  # Get this from AWS Console → Route53 → cab432.com
-  name    = "n11957948.cab432.com"
+  zone_id = "Z02680423BHWEVRU2JZDQ"
+  name    = "kh.asses2.cab432.com"
   type    = "CNAME"
   ttl     = "300"
-  records = [aws_instance.your_ec2_instance.public_dns]  # Your EC2 instance
+  records = ["ec2-13-239-136-127.ap-southeast-2.compute.amazonaws.com"] # must change every boot and on AWS Route53 kh.asses2.cab432.com
 }
 
 output "domain_name" {

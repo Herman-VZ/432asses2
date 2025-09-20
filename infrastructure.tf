@@ -138,6 +138,11 @@ resource "aws_iam_role_policy_attachment" "dynamodb_access" {
   policy_arn = aws_iam_policy.dynamodb_access_policy.arn
 }
 
+resource "aws_iam_role_policy_attachment" "secrets_access" {
+  role       = aws_iam_role.ec2_s3_dynamodb_role.name
+  policy_arn = "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
+}
+
 # Instance profile for EC2
 resource "aws_iam_instance_profile" "ec2_instance_profile" {
   name = "EC2S3DynamoDBInstanceProfile"
@@ -155,3 +160,4 @@ output "s3_processed_bucket" {
 output "dynamodb_table" {
   value = aws_dynamodb_table.image_metadata.name
 }
+

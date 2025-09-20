@@ -15,7 +15,7 @@ class SecretsManagerHelper:
         """Get database credentials from Secrets Manager"""
         try:
             response = self.secrets_client.get_secret_value(
-                SecretId='cab432/database/credentials'
+                SecretId='n11962810-asses2-secret'
             )
             credentials = json.loads(response['SecretString'])
             logger.info("Successfully retrieved credentials from Secrets Manager")
