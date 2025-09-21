@@ -19,6 +19,7 @@ h1 {
     text-align: center;
 }
 
+
 .login-form {
     max-width: 300px;
     margin: 0 auto;
@@ -163,4 +164,76 @@ h1 {
     border-radius: 4px;
     width: 0%;
     transition: width 0.3s;
+}
+
+#mfaChallengeSection {
+    animation: fadeIn 0.3s ease-in;
+    margin-top: 20px;
+    padding: 15px;
+    background: #fff3cd;
+    border: 1px solid #ffeaa7;
+    border-radius: 4px;
+}
+
+#mfaChallengeSection h3 {
+    margin-top: 0;
+    color: #856404;
+}
+
+#mfaChallengeSection p {
+    margin-bottom: 15px;
+    color: #856404;
+}
+
+#mfaCode {
+    width: 100%;
+    padding: 8px;
+    margin: 10px 0;
+    border: 1px solid #ffeaa7;
+    border-radius: 4px;
+    font-size: 16px;
+}
+
+#mfaChallengeSection button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-right: 10px;
+}
+
+#mfaChallengeSection button:first-of-type {
+    background: #17a2b8;
+    color: white;
+}
+
+#mfaChallengeSection button:first-of-type:hover {
+    background: #138496;
+}
+
+#mfaChallengeSection button:last-of-type {
+    background: #6c757d;
+    color: white;
+}
+
+#mfaChallengeSection button:last-of-type:hover {
+    background: #5a6268;
+}
+
+#mfaResult {
+    margin-top: 10px;
+    padding: 8px;
+    border-radius: 4px;
+}
+
+/* Animation for MFA section */
+@keyframes fadeIn {
+    from { 
+        opacity: 0; 
+        transform: translateY(-10px); 
+    }
+    to { 
+        opacity: 1; 
+        transform: translateY(0); 
+    }
 }

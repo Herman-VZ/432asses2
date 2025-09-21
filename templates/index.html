@@ -17,10 +17,25 @@
         {% if not current_user %}
         <div class="login-form">
             <h2>Login</h2>
-            <form action="/web/login" method="post">
-                <input type="text" name="username" placeholder="Username" required>
-                <input type="password" name="password" placeholder="Password" required>
+            <form id="loginForm" onsubmit="event.preventDefault(); login();">
+                <input type="text" id="loginUsername" name="username" placeholder="Username" required>
+                <input type="password" id="loginPassword" name="password" placeholder="Password" required>
                 <button type="submit">Login</button>
+            </form>
+
+            <!-- MFA Challenge Section (initially hidden) -->
+            <div id="mfaChallengeSection" style="display: none; margin-top: 20px; padding: 15px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px;">
+                <h3>🔒 MFA Required</h3>
+                <p>Please enter the code from your authenticator app:</p>
+                <input type="text" id="mfaCode" placeholder="Enter MFA code" style="width: 100%; padding: 8px; margin: 10px 0;">
+                <button onclick="submitMfaCode()" style="padding: 8px 16px; background: #17a2b8; color: white; border: none; border-radius: 4px; margin-right: 10px;">
+                    Verify Code
+                </button>
+                <button onclick="cancelMfa()" style="padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 4px;">
+                    Cancel
+                </button>
+                <div id="mfaResult" style="margin-top: 10px;"></div>
+            </div>
             </form>
             <div class="signup-section" style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 4px;">
                 <h3>New User? Sign Up</h3>
@@ -196,6 +211,107 @@
             });
         }
 
+        // Global variables for MFA state
+        let mfaSessionToken = '';
+        let mfaUsername = '';
+
+        // Login function with MFA support
+        async function login() {
+            const username = document.getElementById('loginUsername').value;
+            const password = document.getElementById('loginPassword').value;
+            const resultDiv = document.getElementById('mfaResult');
+            
+            if (!username || !password) {
+                resultDiv.innerHTML = 'Please enter both username and password';
+                return;
+            }
+            
+            resultDiv.innerHTML = 'Logging in...';
+            
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                const data = await response.json();
+                
+                if (data.challenge_required) {
+                    // Show MFA challenge
+                    mfaSessionToken = data.session;
+                    mfaUsername = username;
+                    document.getElementById('mfaChallengeSection').style.display = 'block';
+                    document.getElementById('loginForm').style.display = 'none';
+                    resultDiv.innerHTML = 'Please enter your MFA code';
+                } else if (data.access_token) {
+                    // Regular login successful
+                    handleSuccessfulLogin(data.access_token, data.id_token);
+                } else {
+                    resultDiv.innerHTML = `Login failed: ${data.msg || 'Unknown error'}`;
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                resultDiv.innerHTML = 'Login failed. Please try again.';
+            }
+        }
+
+        // Submit MFA code
+        async function submitMfaCode() {
+            const mfaCode = document.getElementById('mfaCode').value;
+            const resultDiv = document.getElementById('mfaResult');
+            
+            if (!mfaCode) {
+                resultDiv.innerHTML = 'Please enter MFA code';
+                return;
+            }
+            
+            resultDiv.innerHTML = 'Verifying...';
+            
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: mfaUsername,
+                        session: mfaSessionToken,
+                        mfa_code: mfaCode
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.access_token) {
+                    handleSuccessfulLogin(data.access_token, data.id_token);
+                } else {
+                    resultDiv.innerHTML = `MFA verification failed: ${data.msg || 'Unknown error'}`;
+                }
+            } catch (error) {
+                console.error('MFA error:', error);
+                resultDiv.innerHTML = 'MFA verification failed';
+            }
+        }
+
+        // Cancel MFA and return to login
+        function cancelMfa() {
+            document.getElementById('mfaChallengeSection').style.display = 'none';
+            document.getElementById('loginForm').style.display = 'block';
+            document.getElementById('mfaResult').innerHTML = '';
+            document.getElementById('mfaCode').value = '';
+            mfaSessionToken = '';
+            mfaUsername = '';
+        }
+
+        // Handle successful login
+        function handleSuccessfulLogin(accessToken, idToken) {
+            // Store tokens
+            sessionStorage.setItem('access_token', accessToken);
+            sessionStorage.setItem('id_token', idToken);
+            
+            // Redirect to refresh the page and show authenticated UI
+            window.location.reload();
+        }
+
         // Signup function
         function signup() {
             const username = document.getElementById('signupUsername').value;
@@ -297,7 +413,7 @@
             formData.append('strength', strengthSlider.value);
             formData.append('size_multiplier', sizeMultiplier.value);
             
-            const token = '{{ token }}';
+            const token = getToken();
             
             fetch('/api/filter-image', {
                 method: 'POST',
@@ -406,7 +522,7 @@
             formData.append('strength', strengthSlider.value);
             formData.append('size_multiplier', sizeMultiplier.value);
             
-            const token = '{{ token }}';
+            const token = getToken();
             
             // Create progress bar
             resultDiv.innerHTML = `
@@ -481,7 +597,7 @@
         }
         
         function downloadFilteredImage(imageId) {
-            const token = '{{ token }}';
+            const token = getToken();
             const link = document.createElement('a');
             link.href = `/api/download-image/${imageId}?token=${token}`;
             link.download = 'filtered-image.jpg';
@@ -495,7 +611,7 @@
             const resultDiv = document.getElementById('result-my-images');
             resultDiv.innerHTML = 'Loading...';
 
-            const token = '{{ token }}';
+            const token = getToken();
             
             fetch('/api/my-images', {
                 method: 'GET',

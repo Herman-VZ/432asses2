@@ -157,25 +157,30 @@ def web_login():
     if not username or not password:
         return render_template('index.html', error="Username and password required")
     
-    result = cognito_helper.authenticate(username, password)
+    # Use the new MFA-enabled authentication method
+    result = cognito_helper.initiate_auth_with_mfa(username, password)
     
-    if result['success']:
-        try:
-            # Verify the token and get user claims
-            claims = cognito_helper.verify_token(result['id_token'])
-            
-            # Use Cognito token directly (no Flask-JWT)
-            session['token'] = result['id_token']
-            session['cognito_token'] = result['id_token']
-            session['username'] = claims.get('cognito:username', username)
-            
-            return redirect(url_for('index'))
-            
-        except Exception as e:
-            logger.error(f"Token verification failed: {e}")
-            return render_template('index.html', error="Authentication failed")
-    else:
-        return render_template('index.html', error="Invalid credentials")
+    if not result['success']:
+        return render_template('index.html', error=result.get('error_message', 'Authentication failed'))
+    
+    if result.get('challenge_required'):
+        # MFA challenge required - pass data to template
+        return render_template('index.html', 
+                             mfa_challenge=True,
+                             mfa_session=result['session'],
+                             mfa_username=username,
+                             error="MFA code required")
+    
+    # No MFA required - proceed with normal login
+    try:
+        claims = cognito_helper.verify_token(result['tokens']['IdToken'])
+        session['token'] = result['tokens']['IdToken']
+        session['cognito_token'] = result['tokens']['IdToken']
+        session['username'] = claims.get('cognito:username', username)
+        return redirect(url_for('index'))
+    except Exception as e:
+        logger.error(f"Token verification failed: {e}")
+        return render_template('index.html', error="Authentication failed")
 
 @app.route('/web/logout')
 def web_logout():
