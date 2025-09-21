@@ -149,6 +149,77 @@ resource "aws_iam_instance_profile" "ec2_instance_profile" {
   role = aws_iam_role.ec2_s3_dynamodb_role.name
 }
 
+
+
+# Cognito User Pool
+resource "aws_cognito_user_pool" "main" {
+  name = "cab432-user-pool"
+  
+  # MFA Configuration
+  mfa_configuration = "ON"
+  
+  software_token_mfa_configuration {
+    enabled = true
+  }
+
+  # Email verification (you already have this functionality)
+  auto_verified_attributes = ["email"]
+
+  # Password policy
+  password_policy {
+    minimum_length    = 8
+    require_lowercase = true
+    require_numbers   = true
+    require_symbols   = true
+    require_uppercase = true
+  }
+
+  tags = {
+    Name        = "CAB432-User-Pool"
+    Environment = "Assessment2"
+    Owner       = "n11957948"
+  }
+}
+
+# Cognito User Pool Client
+resource "aws_cognito_user_pool_client" "client" {
+  name = "cab432-app-client"
+  
+  user_pool_id = aws_cognito_user_pool.main.id
+  
+  # Authentication flows - ONLY add what you need
+  explicit_auth_flows = [
+    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_REFRESH_TOKEN_AUTH"
+  ]
+  
+  # Token settings
+  id_token_validity      = 60    # minutes
+  access_token_validity  = 60    # minutes
+  refresh_token_validity = 43200 # minutes (30 days)
+  
+  tags = {
+    Name        = "CAB432-App-Client"
+    Environment = "Assessment2"
+    Owner       = "n11957948"
+  }
+}
+
+# Add Cognito permissions to your existing IAM role
+resource "aws_iam_role_policy_attachment" "cognito_access" {
+  role       = aws_iam_role.ec2_s3_dynamodb_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonCognitoPowerUser"
+}
+
+# Outputs for Cognito (add to your existing outputs)
+output "cognito_user_pool_id" {
+  value = aws_cognito_user_pool.main.id
+}
+
+output "cognito_client_id" {
+  value = aws_cognito_user_pool_client.client.id
+}
+
 output "s3_original_bucket" {
   value = aws_s3_bucket.original_images.bucket
 }

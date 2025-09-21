@@ -249,3 +249,77 @@ class CognitoHelper:
                 'error_code': error_code,
                 'error_message': error_message
             }
+    
+        
+    def initiate_auth_with_mfa(self, username, password):
+        """Authenticate user which may require MFA challenge"""
+        try:
+            auth_params = {
+                'AuthFlow': 'USER_PASSWORD_AUTH',
+                'ClientId': self.client_id,
+                'AuthParameters': {
+                    'USERNAME': username,
+                    'PASSWORD': password
+                }
+            }
+            
+            if self.client_secret:
+                auth_params['AuthParameters']['SECRET_HASH'] = self._get_secret_hash(username)
+            
+            response = self.cognito_client.initiate_auth(**auth_params)
+            
+            # If MFA challenge is required
+            if response.get('ChallengeName') in ['SOFTWARE_TOKEN_MFA', 'MFA_SETUP']:
+                return {
+                    'success': True,
+                    'challenge_required': True,
+                    'challenge_name': response['ChallengeName'],
+                    'session': response['Session']
+                }
+            else:
+                # No MFA required, return tokens directly
+                tokens = response['AuthenticationResult']
+                return {
+                    'success': True,
+                    'challenge_required': False,
+                    'tokens': tokens
+                }
+                
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"Authentication failed: {error_code} - {error_message}")
+            return {
+                'success': False,
+                'error_code': error_code,
+                'error_message': error_message
+            }
+
+    def respond_to_mfa_challenge(self, username, session, mfa_code):
+        """Respond to MFA challenge"""
+        try:
+            response = self.cognito_client.respond_to_auth_challenge(
+                ClientId=self.client_id,
+                ChallengeName='SOFTWARE_TOKEN_MFA',
+                Session=session,
+                ChallengeResponses={
+                    'USERNAME': username,
+                    'SOFTWARE_TOKEN_MFA_CODE': mfa_code
+                }
+            )
+            
+            tokens = response['AuthenticationResult']
+            return {
+                'success': True,
+                'tokens': tokens
+            }
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"MFA challenge failed: {error_code} - {error_message}")
+            return {
+                'success': False,
+                'error_code': error_code,
+                'error_message': error_message
+            }

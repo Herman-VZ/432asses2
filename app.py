@@ -254,31 +254,47 @@ def api_login():
         
     username = request.json.get('username', None)
     password = request.json.get('password', None)
+    mfa_code = request.json.get('mfa_code', None)
+    session = request.json.get('session', None)
     
     if not username or not password:
         return jsonify({"msg": "Missing username or password"}), 400
-        
-    result = cognito_helper.authenticate(username, password)
     
-    if result['success']:
-        # Verify the token to ensure it's valid
-        try:
-            claims = cognito_helper.verify_token(result['id_token'])
-            
+    # Handle MFA challenge response
+    if mfa_code and session:
+        result = cognito_helper.respond_to_mfa_challenge(username, session, mfa_code)
+        if result['success']:
             return jsonify({
-                "access_token": result['access_token'],
-                "id_token": result['id_token'],
+                "access_token": result['tokens']['AccessToken'],
+                "id_token": result['tokens']['IdToken'],
                 "token_type": "Bearer",
-                "expires_in": result['expires_in']
+                "expires_in": result['tokens']['ExpiresIn']
             }), 200
-            
-        except Exception as e:
-            logger.error(f"Token verification failed: {e}")
-            return jsonify({"msg": "Authentication failed: token verification error"}), 401
-    else:
+        else:
+            return jsonify({"msg": f"MFA verification failed: {result.get('error_message')}"}), 401
+    
+    # Initial login attempt
+    result = cognito_helper.initiate_auth_with_mfa(username, password)
+    
+    if not result['success']:
+        return jsonify({"msg": f"Authentication failed: {result.get('error_message')}"}), 401
+    
+    if result.get('challenge_required'):
+        # MFA challenge required
         return jsonify({
-            "msg": f"Authentication failed: {result.get('error_message', 'Unknown error')}"
-        }), 401
+            "challenge_required": True,
+            "challenge_name": result['challenge_name'],
+            "session": result['session'],
+            "message": "MFA code required"
+        }), 200
+    else:
+        # No MFA required, return tokens directly
+        return jsonify({
+            "access_token": result['tokens']['AccessToken'],
+            "id_token": result['tokens']['IdToken'],
+            "token_type": "Bearer",
+            "expires_in": result['tokens']['ExpiresIn']
+        }), 200
 
 @app.route('/api/auth/userinfo', methods=['GET'])
 @cognito_jwt_required
