@@ -1,4 +1,3 @@
-# cognito_helper.py
 import boto3
 import hmac
 import hashlib
@@ -27,7 +26,7 @@ class CognitoHelper:
             self.cognito_client = boto3.client('cognito-idp', region_name=self.region)
             self.jwks_url = f'https://cognito-idp.{self.region}.amazonaws.com/{self.user_pool_id}/.well-known/jwks.json'
             
-            # Cache for JWKS
+            
             self.jwks = None
             self.jwks_last_fetch = None
             
@@ -62,8 +61,10 @@ class CognitoHelper:
                 raise
         return self.jwks
 
-    def sign_up(self, username, password, email):
-        """Register a new user"""
+
+
+    def sign_up(self, username, password, email, user_group='Users'):
+        """Register a new user and optionally add to a group"""
         try:
             sign_up_params = {
                 'ClientId': self.client_id,
@@ -77,17 +78,26 @@ class CognitoHelper:
                 ]
             }
             
-            # Add secret hash if client secret is configured
+            
             if self.client_secret:
                 sign_up_params['SecretHash'] = self._get_secret_hash(username)
             
             response = self.cognito_client.sign_up(**sign_up_params)
             
+            # Add user to group after successful signup
+            if user_group:
+                try:
+                    self.add_user_to_group(username, user_group)
+                    logger.info(f"User {username} added to group {user_group}")
+                except Exception as e:
+                    logger.warning(f"Failed to add user to group: {e}")
+            
             logger.info(f"User {username} signed up successfully")
             return {
                 'success': True,
                 'user_sub': response['UserSub'],
-                'code_delivery_details': response['CodeDeliveryDetails']
+                'code_delivery_details': response['CodeDeliveryDetails'],
+                'user_group': user_group
             }
             
         except ClientError as e:
@@ -109,7 +119,7 @@ class CognitoHelper:
                 'ConfirmationCode': confirmation_code
             }
             
-            # Add secret hash if client secret is configured
+            
             if self.client_secret:
                 confirm_params['SecretHash'] = self._get_secret_hash(username)
             
@@ -140,11 +150,29 @@ class CognitoHelper:
                 }
             }
             
-            # Add secret hash if client secret is configured
+            
             if self.client_secret:
                 auth_params['AuthParameters']['SECRET_HASH'] = self._get_secret_hash(username)
             
             response = self.cognito_client.initiate_auth(**auth_params)
+            
+            # Handle MFA challenge if present
+            if 'ChallengeName' in response:
+                challenge_name = response['ChallengeName']
+                session = response['Session']
+                
+                if challenge_name == 'SOFTWARE_TOKEN_MFA':
+                    return {
+                        'success': True,
+                        'challenge': 'SOFTWARE_TOKEN_MFA',
+                        'session': session,
+                        'message': 'Please enter your TOTP code from your authenticator app.'
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error_message': f'Unsupported challenge: {challenge_name}'
+                    }
             
             tokens = response['AuthenticationResult']
             
@@ -167,8 +195,224 @@ class CognitoHelper:
                 'error_message': error_message
             }
 
+    def respond_to_mfa_challenge(self, username, mfa_code, session, challenge_name='SOFTWARE_TOKEN_MFA'):
+        """Respond to MFA challenge with verification code"""
+        try:
+            challenge_responses = {
+                'USERNAME': username,
+                'SOFTWARE_TOKEN_MFA_CODE': mfa_code
+            }
+            
+            if self.client_secret:
+                challenge_responses['SECRET_HASH'] = self._get_secret_hash(username)
+            
+            response = self.cognito_client.respond_to_auth_challenge(
+                ClientId=self.client_id,
+                ChallengeName=challenge_name,
+                Session=session,
+                ChallengeResponses=challenge_responses
+            )
+            
+            tokens = response['AuthenticationResult']
+            
+            logger.info(f"MFA challenge completed for user {username}")
+            return {
+                'success': True,
+                'access_token': tokens['AccessToken'],
+                'id_token': tokens['IdToken'],
+                'refresh_token': tokens['RefreshToken'],
+                'expires_in': tokens['ExpiresIn']
+            }
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"MFA challenge failed: {error_code} - {error_message}")
+            return {
+                'success': False,
+                'error_code': error_code,
+                'error_message': error_message
+            }
+
+    def enable_mfa_for_user(self, username):
+        """Enable SOFTWARE_TOKEN_MFA for a user (admin function)"""
+        try:
+            self.cognito_client.admin_set_user_mfa_preference(
+                UserPoolId=self.user_pool_id,
+                Username=username,
+                SoftwareTokenMfaSettings={
+                    'Enabled': True,
+                    'PreferredMfa': True
+                }
+            )
+            logger.info(f"SOFTWARE_TOKEN_MFA enabled for user {username}")
+            return {'success': True}
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"Failed to enable SOFTWARE_TOKEN_MFA: {error_code} - {error_message}")
+            return {'success': False, 'error_code': error_code, 'error_message': error_message}
+
+    def associate_software_token(self, access_token=None, session=None):
+        """
+        Associate a software token (TOTP) with the user account.
+        Can use either an AccessToken (after login) or a Session (during MFA setup).
+        """
+        try:
+            params = {}
+            if access_token:
+                params['AccessToken'] = access_token
+            elif session:
+                params['Session'] = session
+            else:
+                raise ValueError("Must provide either access_token or session")
+
+            response = self.cognito_client.associate_software_token(**params)
+
+            secret_code = response['SecretCode']
+            session_token = response.get('Session', None)
+            return {
+                'success': True,
+                'secret_code': secret_code,
+                'session_token': session_token,
+                'qr_code_data': f'otpauth://totp/YourApp?secret={secret_code}&issuer=YourApp'
+            }
+
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"Failed to associate software token: {error_code} - {error_message}")
+            return {
+                'success': False,
+                'error_code': error_code,
+                'error_message': error_message
+            }
+
+    def verify_software_token(self, user_code, access_token=None, session=None):
+        """
+        Verify the software token (TOTP) using either AccessToken or Session.
+        """
+        try:
+            params = {'UserCode': user_code}
+            if access_token:
+                params['AccessToken'] = access_token
+            elif session:
+                params['Session'] = session
+            else:
+                raise ValueError("Must provide either access_token or session")
+
+            response = self.cognito_client.verify_software_token(**params)
+            return {
+                'success': True,
+                'status': response['Status']
+            }
+
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"Failed to verify software token: {error_code} - {error_message}")
+            return {
+                'success': False,
+                'error_code': error_code,
+                'error_message': error_message
+            }
+
+    def add_user_to_group(self, username, group_name):
+        """Add a user to a group"""
+        try:
+            self.cognito_client.admin_add_user_to_group(
+                UserPoolId=self.user_pool_id,
+                Username=username,
+                GroupName=group_name
+            )
+            
+            logger.info(f"User {username} added to group {group_name}")
+            return {'success': True}
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"Failed to add user to group: {error_code} - {error_message}")
+            return {
+                'success': False,
+                'error_code': error_code,
+                'error_message': error_message
+            }
+
+    def remove_user_from_group(self, username, group_name):
+        """Remove a user from a group"""
+        try:
+            self.cognito_client.admin_remove_user_from_group(
+                UserPoolId=self.user_pool_id,
+                Username=username,
+                GroupName=group_name
+            )
+            
+            logger.info(f"User {username} removed from group {group_name}")
+            return {'success': True}
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"Failed to remove user from group: {error_code} - {error_message}")
+            return {
+                'success': False,
+                'error_code': error_code,
+                'error_message': error_message
+            }
+
+    def get_user_groups(self, username):
+        """Get all groups that a user belongs to"""
+        try:
+            response = self.cognito_client.admin_list_groups_for_user(
+                UserPoolId=self.user_pool_id,
+                Username=username
+            )
+            
+            groups = [group['GroupName'] for group in response['Groups']]
+            logger.info(f"Retrieved groups for user {username}: {groups}")
+            
+            return {
+                'success': True,
+                'groups': groups,
+                'group_details': response['Groups']
+            }
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"Failed to get user groups: {error_code} - {error_message}")
+            return {
+                'success': False,
+                'error_code': error_code,
+                'error_message': error_message
+            }
+
+    def list_all_groups(self):
+        """List all groups in the user pool"""
+        try:
+            response = self.cognito_client.list_groups(
+                UserPoolId=self.user_pool_id
+            )
+            
+            logger.info(f"Retrieved {len(response['Groups'])} groups")
+            return {
+                'success': True,
+                'groups': response['Groups']
+            }
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            logger.error(f"Failed to list groups: {error_code} - {error_message}")
+            return {
+                'success': False,
+                'error_code': error_code,
+                'error_message': error_message
+            }
+
     def verify_token(self, token):
-        """Verify JWT token and return decoded claims"""
+        """Verify JWT token and return decoded claims with group information"""
         try:
             # Get the JWKS
             jwks = self._get_jwks()
@@ -196,7 +440,10 @@ class CognitoHelper:
                 issuer=f'https://cognito-idp.{self.region}.amazonaws.com/{self.user_pool_id}'
             )
             
-            logger.info(f"Token verified for user: {claims.get('cognito:username', claims.get('username'))}")
+            # Extract group information from token claims
+            groups = claims.get('cognito:groups', [])
+            
+            logger.info(f"Token verified for user: {claims.get('cognito:username', claims.get('username'))}, groups: {groups}")
             return claims
             
         except Exception as e:
@@ -212,9 +459,16 @@ class CognitoHelper:
             for attr in response['UserAttributes']:
                 user_attributes[attr['Name']] = attr['Value']
             
+            # Get user's groups
+            username = response['Username']
+            groups_result = self.get_user_groups(username)
+            
             return {
-                'username': response['Username'],
-                'attributes': user_attributes
+                'username': username,
+                'attributes': user_attributes,
+                'groups': groups_result.get('groups', []) if groups_result.get('success') else [],
+                'mfa_enabled': user_attributes.get('phone_number_verified') == 'true' or 
+                              'software_token_mfa_enabled' in user_attributes
             }
             
         except ClientError as e:
@@ -223,7 +477,7 @@ class CognitoHelper:
             logger.error(f"Failed to get user info: {error_code} - {error_message}")
             raise
 
-    def admin_create_user(self, username, email, temporary_password):
+    def admin_create_user(self, username, email, temporary_password, user_group='Users'):
         """Admin create user (for testing or admin purposes)"""
         try:
             response = self.cognito_client.admin_create_user(
@@ -234,11 +488,15 @@ class CognitoHelper:
                     {'Name': 'email', 'Value': email},
                     {'Name': 'email_verified', 'Value': 'true'}
                 ],
-                MessageAction='SUPPRESS'  # Don't send welcome email
+                MessageAction='SUPPRESS'
             )
             
-            logger.info(f"Admin created user {username}")
-            return {'success': True, 'user': response['User']}
+            # Add user to group
+            if user_group:
+                self.add_user_to_group(username, user_group)
+            
+            logger.info(f"Admin created user {username} in group {user_group}")
+            return {'success': True, 'user': response['User'], 'group': user_group}
             
         except ClientError as e:
             error_code = e.response['Error']['Code']

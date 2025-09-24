@@ -12,6 +12,7 @@ from s3_helper import S3Helper
 from dynamodb_helper import DynamoDBHelper
 from cognito_helper import CognitoHelper
 import sys
+import boto3
 
 # Set up logging to output to stdout (Docker captures this)
 logging.basicConfig(
@@ -32,6 +33,27 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 s3_helper = S3Helper()
 db_helper = DynamoDBHelper()
 cognito_helper = CognitoHelper()
+
+# Decorator for checking user groups
+def require_group(required_groups):
+    """Decorator to require user to be in specific groups"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not hasattr(g, 'cognito_user') or not g.cognito_user:
+                return jsonify({"msg": "Authentication required"}), 401
+            
+            user_groups = g.cognito_user.get('cognito:groups', [])
+            
+            # Check if user is in any of the required groups
+            if not any(group in user_groups for group in required_groups):
+                return jsonify({
+                    "msg": f"Access denied. Required groups: {required_groups}. Your groups: {user_groups}"
+                }), 403
+            
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
 
 # Custom decorator for Cognito JWT verification
 def cognito_jwt_required(f):
@@ -160,14 +182,26 @@ def web_login():
     result = cognito_helper.authenticate(username, password)
     
     if result['success']:
+        if 'challenge' in result:
+            # MFA challenge required
+            session['mfa_session'] = result['session']
+            session['mfa_challenge'] = result['challenge']
+            session['pending_username'] = username
+            return render_template('index.html', 
+                                 mfa_required=True, 
+                                 mfa_challenge=result['challenge'],
+                                 message=result.get('message'))
+        
         try:
             # Verify the token and get user claims
             claims = cognito_helper.verify_token(result['id_token'])
             
             # Use Cognito token directly (no Flask-JWT)
             session['token'] = result['id_token']
+            session['access_token'] = result['access_token']
             session['cognito_token'] = result['id_token']
             session['username'] = claims.get('cognito:username', username)
+            session['user_groups'] = claims.get('cognito:groups', [])
             
             return redirect(url_for('index'))
             
@@ -177,11 +211,55 @@ def web_login():
     else:
         return render_template('index.html', error="Invalid credentials")
 
+@app.route('/web/mfa-verify', methods=['POST'])
+def web_mfa_verify():
+    username = session.get('pending_username')
+    mfa_code = request.form.get('mfa_code')
+    mfa_session = session.get('mfa_session')
+    challenge_name = session.get('mfa_challenge')
+    
+    if not all([username, mfa_code, mfa_session, challenge_name]):
+        return render_template('index.html', error="MFA verification failed - missing data")
+    
+    result = cognito_helper.respond_to_mfa_challenge(username, mfa_code, mfa_session, challenge_name)
+    
+    if result['success']:
+        try:
+            # Verify the token and get user claims
+            claims = cognito_helper.verify_token(result['id_token'])
+            
+            # Clear MFA session data
+            session.pop('mfa_session', None)
+            session.pop('mfa_challenge', None)
+            session.pop('pending_username', None)
+            
+            # Set authenticated session
+            session['token'] = result['id_token']
+            session['cognito_token'] = result['id_token']
+            session['username'] = claims.get('cognito:username', username)
+            session['user_groups'] = claims.get('cognito:groups', [])
+            
+            return redirect(url_for('index'))
+            
+        except Exception as e:
+            logger.error(f"Token verification failed after MFA: {e}")
+            return render_template('index.html', error="Authentication failed after MFA")
+    else:
+        return render_template('index.html', 
+                             error="Invalid MFA code",
+                             mfa_required=True,
+                             mfa_challenge=challenge_name)
+
 @app.route('/web/logout')
 def web_logout():
     session.pop('token', None)
+    session.pop('access_token', None)
     session.pop('cognito_token', None)
     session.pop('username', None)
+    session.pop('user_groups', None)
+    session.pop('mfa_session', None)
+    session.pop('mfa_challenge', None)
+    session.pop('pending_username', None)
     return redirect(url_for('index'))
 
 @app.route('/web/test-endpoints')
@@ -196,9 +274,9 @@ def web_test_endpoints():
 # API routes
 @app.route('/api/')
 def api_root():
-    return jsonify({"message": "Welcome to the CAB432 API Server"})
+    return jsonify({"message": "Welcome to the CAB432 API Server with MFA and User Groups"})
 
-# New Cognito authentication endpoints
+# Cognito authentication endpoints
 @app.route('/api/auth/signup', methods=['POST'])
 def api_signup():
     if not request.is_json:
@@ -207,6 +285,7 @@ def api_signup():
     username = request.json.get('username', None)
     password = request.json.get('password', None)
     email = request.json.get('email', None)
+    user_group = request.json.get('user_group', 'Users')  # Default to Users group
     
     if not username or not password or not email:
         return jsonify({"msg": "Missing required fields"}), 400
@@ -215,12 +294,13 @@ def api_signup():
     if len(password) < 8:
         return jsonify({"msg": "Password must be at least 8 characters"}), 400
         
-    result = cognito_helper.sign_up(username, password, email)
+    result = cognito_helper.sign_up(username, password, email, user_group)
     
     if result['success']:
         return jsonify({
             "message": "User registered successfully. Please check your email for confirmation code.",
-            "user_sub": result['user_sub']
+            "user_sub": result['user_sub'],
+            "user_group": result.get('user_group')
         }), 200
     else:
         return jsonify({
@@ -261,6 +341,15 @@ def api_login():
     result = cognito_helper.authenticate(username, password)
     
     if result['success']:
+        # Check if MFA challenge is required
+        if 'challenge' in result:
+            return jsonify({
+                "mfa_required": True,
+                "challenge": result['challenge'],
+                "session": result['session'],
+                "message": result.get('message')
+            }), 200
+        
         # Verify the token to ensure it's valid
         try:
             claims = cognito_helper.verify_token(result['id_token'])
@@ -269,7 +358,8 @@ def api_login():
                 "access_token": result['access_token'],
                 "id_token": result['id_token'],
                 "token_type": "Bearer",
-                "expires_in": result['expires_in']
+                "expires_in": result['expires_in'],
+                "user_groups": claims.get('cognito:groups', [])
             }), 200
             
         except Exception as e:
@@ -279,6 +369,102 @@ def api_login():
         return jsonify({
             "msg": f"Authentication failed: {result.get('error_message', 'Unknown error')}"
         }), 401
+
+@app.route('/api/auth/mfa-verify', methods=['POST'])
+def api_mfa_verify():
+    if not request.is_json:
+        return jsonify({"msg": "Missing JSON in request"}), 400
+        
+    username = request.json.get('username', None)
+    mfa_code = request.json.get('mfa_code', None)
+    session_token = request.json.get('session', None)
+    challenge_name = request.json.get('challenge', 'SMS_MFA')
+    
+    if not all([username, mfa_code, session_token]):
+        return jsonify({"msg": "Missing required MFA fields"}), 400
+        
+    result = cognito_helper.respond_to_mfa_challenge(username, mfa_code, session_token, challenge_name)
+    
+    if result['success']:
+        try:
+            claims = cognito_helper.verify_token(result['id_token'])
+            
+            return jsonify({
+                "access_token": result['access_token'],
+                "id_token": result['id_token'],
+                "token_type": "Bearer",
+                "expires_in": result['expires_in'],
+                "user_groups": claims.get('cognito:groups', [])
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Token verification failed after MFA: {e}")
+            return jsonify({"msg": "Authentication failed after MFA"}), 401
+    else:
+        return jsonify({
+            "msg": f"MFA verification failed: {result.get('error_message', 'Unknown error')}"
+        }), 401
+
+@app.route('/api/auth/setup-totp', methods=['POST'])
+@cognito_jwt_required
+def api_setup_totp():
+    """Setup TOTP (Authenticator App) using user-level API only"""
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({"msg": "Missing access token"}), 401
+    
+    access_token = auth_header[7:]
+    
+    # Associate software token for the current user
+    result = cognito_helper.associate_software_token(access_token=access_token)
+    
+    if result['success']:
+        # Return the secret code and QR code for the user to scan
+        return jsonify({
+            "message": "TOTP setup initiated",
+            "secret_code": result['secret_code'],
+            "qr_code_data": result['qr_code_data'],
+            "session_token": result.get('session_token') or access_token
+        }), 200
+    else:
+        return jsonify({
+            "msg": f"TOTP setup failed: {result.get('error_message', 'Unknown error')}"
+        }), 400
+
+
+@app.route('/api/auth/verify-totp-setup', methods=['POST'])
+@cognito_jwt_required
+def api_verify_totp_setup():
+    """Verify TOTP setup with user-provided code"""
+    if not request.is_json:
+        return jsonify({"msg": "Missing JSON in request"}), 400
+    
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({"msg": "Missing access token"}), 401
+    
+    access_token = auth_header[7:]
+    user_code = request.json.get('user_code', None)
+    session_token = request.json.get('session_token', None)
+    
+    if not user_code or not session_token:
+        return jsonify({"msg": "Missing user code or session"}), 400
+    
+    result = cognito_helper.verify_software_token(
+        user_code=user_code,
+        access_token=access_token,
+        session=session_token
+    )
+    
+    if result['success']:
+        return jsonify({
+            "message": "TOTP verified successfully",
+            "status": result['status']
+        }), 200
+    else:
+        return jsonify({
+            "msg": f"TOTP verification failed: {result.get('error_message', 'Unknown error')}"
+        }), 400
 
 @app.route('/api/auth/userinfo', methods=['GET'])
 @cognito_jwt_required
@@ -300,6 +486,7 @@ def api_user_info():
 @cognito_jwt_required
 def api_protected():
     current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
+    user_groups = g.cognito_user.get('cognito:groups', [])
     
     # Try to get additional info from Cognito if available
     cognito_info = {}
@@ -313,20 +500,134 @@ def api_protected():
     
     return jsonify({
         "logged_in_as": current_user,
+        "user_groups": user_groups,
         "cognito_info": cognito_info,
         "message": "This is a protected endpoint"
+    }), 200
+
+# Admin endpoints (require Admin group)
+@app.route('/api/admin/users/<username>/groups', methods=['POST'])
+@cognito_jwt_required
+@require_group(['Admins'])
+def api_add_user_to_group(username):
+    """Add user to a group (Admin only)"""
+    if not request.is_json:
+        return jsonify({"msg": "Missing JSON in request"}), 400
+    
+    group_name = request.json.get('group_name')
+    if not group_name:
+        return jsonify({"msg": "Missing group_name"}), 400
+    
+    result = cognito_helper.add_user_to_group(username, group_name)
+    
+    if result['success']:
+        return jsonify({"message": f"User {username} added to group {group_name}"}), 200
+    else:
+        return jsonify({
+            "msg": f"Failed to add user to group: {result.get('error_message', 'Unknown error')}"
+        }), 400
+
+@app.route('/api/admin/users/<username>/groups/<group_name>', methods=['DELETE'])
+@cognito_jwt_required
+@require_group(['Admins'])
+def api_remove_user_from_group(username, group_name):
+    """Remove user from a group (Admin only)"""
+    result = cognito_helper.remove_user_from_group(username, group_name)
+    
+    if result['success']:
+        return jsonify({"message": f"User {username} removed from group {group_name}"}), 200
+    else:
+        return jsonify({
+            "msg": f"Failed to remove user from group: {result.get('error_message', 'Unknown error')}"
+        }), 400
+
+@app.route('/api/admin/users/<username>/mfa', methods=['POST'])
+@cognito_jwt_required
+@require_group(['Admins'])
+def api_enable_user_mfa(username):
+    """Enable MFA for a user (Admin only)"""
+    if not request.is_json:
+        return jsonify({"msg": "Missing JSON in request"}), 400
+    
+    mfa_type = request.json.get('mfa_type', 'SMS_MFA')
+    
+    result = cognito_helper.enable_mfa_for_user(username, mfa_type)
+    
+    if result['success']:
+        return jsonify({
+            "message": f"MFA ({mfa_type}) enabled for user {username}",
+            "mfa_type": result['mfa_type']
+        }), 200
+    else:
+        return jsonify({
+            "msg": f"Failed to enable MFA: {result.get('error_message', 'Unknown error')}"
+        }), 400
+
+@app.route('/api/admin/groups', methods=['GET'])
+@cognito_jwt_required
+@require_group(['Admins'])
+def api_list_groups():
+    """List all groups (Admin only)"""
+    result = cognito_helper.list_all_groups()
+    
+    if result['success']:
+        return jsonify({
+            "groups": result['groups'],
+            "count": len(result['groups'])
+        }), 200
+    else:
+        return jsonify({
+            "msg": f"Failed to list groups: {result.get('error_message', 'Unknown error')}"
+        }), 400
+
+@app.route('/api/users/groups', methods=['GET'])
+@cognito_jwt_required
+def api_get_my_groups():
+    """Get current user's groups"""
+    current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
+    user_groups = g.cognito_user.get('cognito:groups', [])
+    
+    return jsonify({
+        "username": current_user,
+        "groups": user_groups
+    }), 200
+
+# Premium endpoint (require Premium group)
+@app.route('/api/premium/batch-process-large', methods=['POST'])
+@cognito_jwt_required
+@require_group(['Premium', 'Admins'])
+def api_premium_batch_process():
+    """Batch processing for Premium users"""
+    current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
+    
+    # This could be batch processing with higher limits, priority processing, etc.
+    return jsonify({
+        "message": "Premium batch processing initiated",
+        "user": current_user,
+        "features": ["Priority queue", "Higher batch limits", "Advanced filters"]
     }), 200
 
 @app.route('/api/process', methods=['POST'])
 @cognito_jwt_required
 def api_process():
     current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
-    # Simulate CPU-intensive work
+    user_groups = g.cognito_user.get('cognito:groups', [])
+    
+    # Different processing based on user group
+    processing_time = 2  # Default
+    if 'Premium' in user_groups:
+        processing_time = 1  # Faster for premium users
+    elif 'Admins' in user_groups:
+        processing_time = 0.5  # Fastest for admins
+    
     import time
-    time.sleep(2)  # Simulate processing time
+    time.sleep(processing_time)
+    
     return jsonify({
         "message": "Processing complete", 
         "user": current_user,
+        "user_groups": user_groups,
+        "processing_time": processing_time,
         "result": "Sample processed data"
     }), 200
 
@@ -334,6 +635,7 @@ def api_process():
 @cognito_jwt_required
 def api_filter_image():
     current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
+    user_groups = g.cognito_user.get('cognito:groups', [])
     
     if 'image' not in request.files:
         return jsonify({"error": "No image file provided"}), 400
@@ -342,6 +644,18 @@ def api_filter_image():
     filter_type = request.form.get('filter', 'BLUR')
     strength = int(request.form.get('strength', 5))
     size_multiplier = float(request.form.get('size_multiplier', 1.0))
+    
+    # Check size limits based on user group
+    max_size_multiplier = 2.0  # Default for Users
+    if 'Premium' in user_groups:
+        max_size_multiplier = 10.0
+    elif 'Admins' in user_groups:
+        max_size_multiplier = 20.0
+    
+    if size_multiplier > max_size_multiplier:
+        return jsonify({
+            "error": f"Size multiplier {size_multiplier} exceeds limit for your group. Max: {max_size_multiplier}"
+        }), 403
     
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
@@ -355,6 +669,7 @@ def api_filter_image():
             return jsonify({
                 "message": "Image processed successfully",
                 "user": current_user,
+                "user_groups": user_groups,
                 "filter": result['filter'],
                 "strength": result['strength'],
                 "size_multiplier": result['size_multiplier'],
@@ -366,6 +681,7 @@ def api_filter_image():
 @cognito_jwt_required
 def api_batch_filter_images():
     current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
+    user_groups = g.cognito_user.get('cognito:groups', [])
     
     if 'images' not in request.files:
         return jsonify({"error": "No image files provided"}), 400
@@ -375,13 +691,31 @@ def api_batch_filter_images():
     strength = int(request.form.get('strength', 5))
     size_multiplier = float(request.form.get('size_multiplier', 1.0))
     
+    # Check batch limits based on user group
+    max_batch_size = 5  # Default for Users
+    if 'Premium' in user_groups:
+        max_batch_size = 20
+    elif 'Admins' in user_groups:
+        max_batch_size = 50
+    
+    if len(uploaded_files) > max_batch_size:
+        return jsonify({
+            "error": f"Batch size {len(uploaded_files)} exceeds limit for your group. Max: {max_batch_size}"
+        }), 403
+    
     if not uploaded_files or uploaded_files[0].filename == '':
         return jsonify({"error": "No selected files"}), 400
     
     results = []
     
     # Process images in parallel using ThreadPoolExecutor
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    max_workers = 5  # Default
+    if 'Premium' in user_groups:
+        max_workers = 10
+    elif 'Admins' in user_groups:
+        max_workers = 15
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Create a list of futures
         futures = []
         for file in uploaded_files:
@@ -412,6 +746,9 @@ def api_batch_filter_images():
     
     return jsonify({
         "user": current_user,
+        "user_groups": user_groups,
+        "max_batch_size": max_batch_size,
+        "max_workers": max_workers,
         "processed_count": len([r for r in results if 'error' not in r]),
         "error_count": len([r for r in results if 'error' in r]),
         "results": results
@@ -488,18 +825,47 @@ def api_health():
         # Test DynamoDB connectivity
         db_test = db_helper.get_image_metadata("test")
         
-        # Test Cognito connectivity by trying to get JWKS
+        # Test Cognito connectivity and features
+        cognito_connected = False
+        groups_available = False
+        mfa_supported = False
+        
         try:
+            # Test basic connectivity
             cognito_helper._get_jwks()
             cognito_connected = True
-        except:
-            cognito_connected = False
+            
+            # Test groups functionality
+            groups_result = cognito_helper.list_all_groups()
+            if groups_result.get('success'):
+                groups_available = True
+                logger.info(f"Found {len(groups_result['groups'])} Cognito groups")
+            
+            # Check if user pool supports MFA (basic check)
+            try:
+                # This will work if the user pool is configured for MFA
+                user_pool_client = boto3.client('cognito-idp', region_name='ap-southeast-2')
+                pool_info = user_pool_client.describe_user_pool(UserPoolId=cognito_helper.user_pool_id)
+                mfa_config = pool_info['UserPool'].get('MfaConfiguration', 'OFF')
+                mfa_supported = mfa_config in ['OPTIONAL', 'ON']
+                logger.info(f"MFA configuration: {mfa_config}")
+            except Exception as mfa_e:
+                logger.warning(f"Could not check MFA configuration: {mfa_e}")
+            
+        except Exception as e:
+            logger.error(f"Cognito connectivity test failed: {e}")
         
         return jsonify({
             "status": "healthy",
             "s3_connected": True,
             "dynamodb_connected": True,
             "cognito_connected": cognito_connected,
+            "features": {
+                "user_groups": "enabled" if groups_available else "limited",
+                "mfa": "enabled" if mfa_supported else "basic",
+                "group_based_limits": "enabled"
+            },
+            "cognito_groups": groups_result.get('groups', []) if groups_available else [],
             "timestamp": datetime.datetime.utcnow().isoformat()
         }), 200
     except Exception as e:
