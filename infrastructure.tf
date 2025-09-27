@@ -19,6 +19,35 @@ resource "aws_s3_bucket" "processed_images" {
   }
 }
 
+
+# Redis ElastiCache Cluster
+resource "aws_elasticache_cluster" "cache" {
+  cluster_id      = "image-cache"
+  engine         = "redis"
+  node_type      = "cache.t3.micro"
+  num_cache_nodes = 1
+  port           = 6379
+}
+
+# SSM Parameters
+resource "aws_ssm_parameter" "base_url" {
+  name  = "/cab432/app/base_url"
+  type  = "String"
+  value = "https://kh.asses2.cab432.com"
+}
+
+resource "aws_ssm_parameter" "max_batch_size" {
+  name  = "/cab432/app/max_batch_size"
+  type  = "String"
+  value = "50"
+}
+
+resource "aws_ssm_parameter" "cache_ttl" {
+  name  = "/cab432/app/cache_ttl"
+  type  = "String"
+  value = "300"
+}
+
 # DynamoDB Table for metadata
 resource "aws_dynamodb_table" "image_metadata" {
   name           = "ImageMetadata"

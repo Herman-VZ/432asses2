@@ -5,4 +5,21 @@ services:
     ports:
       - "8080:8080"
     env_file:
-      - .env
+      - cognito.env  # Change this line
+    depends_on:
+      - redis
+    # Add Redis environment variables since they're not in cognito.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  redis_data:

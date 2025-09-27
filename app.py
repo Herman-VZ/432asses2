@@ -13,6 +13,11 @@ from dynamodb_helper import DynamoDBHelper
 from cognito_helper import CognitoHelper
 import sys
 import boto3
+from redis_helper import redis_helper
+from parameter_store_helper import param_helper
+from redis_helper import redis_helper
+from parameter_store_helper import param_helper
+
 
 # Set up logging to output to stdout (Docker captures this)
 logging.basicConfig(
@@ -28,6 +33,11 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET', 'flask-super-secret-key')
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+# Load configuration from Parameter Store
+app.config['BASE_URL'] = param_helper.get_param('/cab432/app/base_url', 'http://localhost:8080')
+app.config['MAX_BATCH_SIZE'] = int(param_helper.get_param('/cab432/app/max_batch_size', '10'))
+app.config['CACHE_TTL'] = int(param_helper.get_param('/cab432/app/cache_ttl', '300'))
+
 
 # Initialize AWS helpers
 s3_helper = S3Helper()
@@ -757,12 +767,17 @@ def api_batch_filter_images():
 @app.route('/api/my-images', methods=['GET'])
 @cognito_jwt_required
 def api_my_images():
-    current_user = g.cognito_user.get('cognito:username', g.cognito_user.get('username'))
-
-    # Get user's images from DynamoDB
+    current_user = g.cognito_user.get('cognito:username')
+    cache_key = f"user_images:{current_user}"
+    
+    # Try cache first
+    cached = redis_helper.cache_get(cache_key)
+    if cached:
+        logger.info(f"✅ Cache hit for user: {current_user}")
+        return jsonify(cached), 200
+    
+    # Cache miss - get from database
     user_images = db_helper.get_user_images(current_user)
-
-    # Generate presigned URLs for each image
     images_with_urls = []
     for img in user_images:
         image_url = s3_helper.generate_presigned_url(img['ImageID'], is_processed=True)
@@ -773,8 +788,74 @@ def api_my_images():
             "size_multiplier": img['SizeMultiplier'],
             "image_url": image_url
         })
-
+    
+    # Cache the result
+    redis_helper.cache_set(cache_key, images_with_urls, app.config['CACHE_TTL'])
+    
     return jsonify(images_with_urls), 200
+
+@app.route('/api/cache-test', methods=['GET'])
+@cognito_jwt_required
+def api_cache_test():
+    """Test endpoint to demonstrate caching"""
+    import time
+    current_user = g.cognito_user.get('cognito:username')
+    cache_key = f"test:{current_user}"
+    
+    # Try cache first with better error handling
+    cached = None
+    cache_available = False
+    
+    try:
+        if redis_helper.redis_client:
+            cached = redis_helper.cache_get(cache_key)
+            cache_available = True
+            if cached:
+                return jsonify({
+                    "message": "Data from cache!",
+                    "data": cached,
+                    "source": "cache",
+                    "cache_available": True
+                })
+    except Exception as e:
+        logger.error(f"Redis cache error: {e}")
+        cache_available = False
+    
+    # Simulate slow database query
+    time.sleep(2)
+    test_data = {
+        "user": current_user,
+        "timestamp": time.time(),
+        "message": "This data was expensive to generate!",
+        "cache_status": "available" if cache_available else "unavailable"
+    }
+    
+    # Try to cache the result
+    if cache_available:
+        try:
+            redis_helper.cache_set(cache_key, test_data, 60)
+        except Exception as e:
+            logger.error(f"Redis set error: {e}")
+    
+    return jsonify({
+        "message": "Data from database (slow)",
+        "data": test_data,
+        "source": "database",
+        "cache_available": cache_available
+    })
+ 
+
+@app.route('/api/config', methods=['GET'])
+def api_config():
+    """Show current configuration from Parameter Store"""
+    return jsonify({
+        "base_url": app.config['BASE_URL'],
+        "max_batch_size": app.config['MAX_BATCH_SIZE'],
+        "cache_ttl": app.config['CACHE_TTL'],
+        "redis_connected": redis_helper.redis_client is not None
+    })
+
+
 
 @app.route('/api/download-image/<image_id>', methods=['GET'])
 def api_download_image(image_id):
@@ -814,6 +895,39 @@ def api_download_image(image_id):
         as_attachment=True,
         download_name=filename
     )
+
+@app.route('/api/debug-redis', methods=['GET'])
+def api_debug_redis():
+    """Debug Redis connection"""
+    try:
+        # Test basic connection
+        if not redis_helper.redis_client:
+            return jsonify({"error": "Redis client is None"}), 500
+            
+        # Test ping
+        ping_result = redis_helper.redis_client.ping()
+        
+        # Test simple set/get
+        test_key = "debug_test"
+        redis_helper.redis_client.set(test_key, "redis_working", ex=10)
+        retrieved = redis_helper.redis_client.get(test_key)
+        
+        return jsonify({
+            "redis_client_exists": redis_helper.redis_client is not None,
+            "ping_success": ping_result,
+            "set_get_test": retrieved.decode() if retrieved else "failed",
+            "redis_host": os.environ.get('REDIS_HOST'),
+            "redis_port": os.environ.get('REDIS_PORT'),
+            "environment_loaded": bool(os.environ.get('REDIS_HOST'))
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "redis_client_exists": redis_helper.redis_client is not None,
+            "redis_host": os.environ.get('REDIS_HOST'),
+            "redis_port": os.environ.get('REDIS_PORT')
+        }), 500
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
