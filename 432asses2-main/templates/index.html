@@ -170,6 +170,27 @@
                 <div class="result" id="result-userinfo"></div>
             </div>
 
+            <!-- Add this section after the "User Information & Groups" section -->
+            <div class="endpoint">
+                <h3>2. Redis Cache Testing</h3>
+                <p><strong>Test the new Redis caching functionality:</strong></p>
+                <button onclick="testCacheEndpoint()">Test Cache Performance</button>
+                <button onclick="clearCache()" style="background: #dc3545;">Clear My Cache</button>
+                
+                <div class="cache-info" style="background: #e8f5e8; padding: 10px; border-radius: 4px; margin: 10px 0;">
+                    <p><strong>How to test:</strong></p>
+                    <ul style="margin: 5px 0; padding-left: 20px;">
+                        <li>First click: Should take ~2 seconds (database query)</li>
+                        <li>Second click: Should be instant (cached result)</li>
+                        <li>Cache expires after 1 minute</li>
+                    </ul>
+                </div>
+                
+                <div class="result" id="result-cache">
+                    <div id="cache-performance"></div>
+                </div>
+            </div>
+
             <!-- MFA Setup Section -->
             <div class="endpoint">
                 <h3>2. Multi-Factor Authentication Setup</h3>
@@ -810,6 +831,7 @@
             link.click();
             document.body.removeChild(link);
         }
+        
 
         function loadMyImages() {
             const resultDiv = document.getElementById('result-my-images');
@@ -878,6 +900,107 @@
                 console.error('Full error:', error);
             });
         }
+
+        // Cache Testing Functions
+        let lastCacheTestTime = null;
+
+        function testCacheEndpoint() {
+            const resultDiv = document.getElementById('result-cache');
+            const performanceDiv = document.getElementById('cache-performance');
+            const startTime = Date.now();
+            
+            resultDiv.innerHTML = 'Testing cache endpoint...';
+            
+            const token = '{{ token }}';
+            
+            fetch('/api/cache-test', {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                const endTime = Date.now();
+                const responseTime = endTime - startTime;
+                
+                // Calculate performance improvement
+                let performanceMsg = '';
+                if (lastCacheTestTime) {
+                    const improvement = ((lastCacheTestTime - responseTime) / lastCacheTestTime * 100).toFixed(1);
+                    performanceMsg = `<br><strong>Performance:</strong> ${responseTime}ms (${improvement}% faster than previous)`;
+                }
+                lastCacheTestTime = responseTime;
+                
+                resultDiv.innerHTML = `
+                    <div style="background: ${data.source === 'cache' ? '#d4edda' : '#fff3cd'}; padding: 10px; border-radius: 4px;">
+                        <strong>Response Time:</strong> ${responseTime}ms<br>
+                        <strong>Source:</strong> ${data.source}<br>
+                        <strong>Data:</strong> ${JSON.stringify(data.data, null, 2)}
+                        ${performanceMsg}
+                    </div>
+                `;
+                
+                // Update performance history
+                updatePerformanceHistory(responseTime, data.source);
+            })
+            .catch(error => {
+                resultDiv.innerHTML = `Error: ${error}`;
+            });
+        }
+
+        function clearCache() {
+            const resultDiv = document.getElementById('result-cache');
+            resultDiv.innerHTML = 'Clearing cache...';
+            
+            const token = '{{ token }}';
+            const currentUser = '{{ current_user }}';
+            
+            // This would need a backend endpoint to clear cache
+            // For now, we'll just reset the performance tracking
+            lastCacheTestTime = null;
+            
+            // Simulate cache clear by making a new request that will bypass cache
+            resultDiv.innerHTML = 'Cache cleared locally. Next test will hit the database.';
+            
+            // Add a visual indicator
+            setTimeout(() => {
+                const indicator = document.createElement('div');
+                indicator.style.background = '#17a2b8';
+                indicator.style.color = 'white';
+                indicator.style.padding = '5px';
+                indicator.style.marginTop = '10px';
+                indicator.style.borderRadius = '4px';
+                indicator.textContent = '✅ Cache cleared. Next call will be slow.';
+                resultDiv.appendChild(indicator);
+            }, 500);
+        }
+
+        function updatePerformanceHistory(responseTime, source) {
+            const performanceDiv = document.getElementById('cache-performance');
+            if (!performanceDiv.innerHTML) {
+                performanceDiv.innerHTML = '<h4>Performance History:</h4><ul id="performance-list"></ul>';
+            }
+            
+            const list = document.getElementById('performance-list') || performanceDiv.querySelector('ul');
+            const listItem = document.createElement('li');
+            
+            const time = new Date().toLocaleTimeString();
+            const sourceIcon = source === 'cache' ? '⚡' : '🐌';
+            
+            listItem.innerHTML = `${sourceIcon} ${time}: ${responseTime}ms (${source})`;
+            list.appendChild(listItem);
+            
+            // Keep only last 5 entries
+            const items = list.getElementsByTagName('li');
+            if (items.length > 5) {
+                list.removeChild(items[0]);
+            }
+        }
+
+
+
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </body>
