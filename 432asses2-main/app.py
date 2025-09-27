@@ -802,30 +802,46 @@ def api_cache_test():
     current_user = g.cognito_user.get('cognito:username')
     cache_key = f"test:{current_user}"
     
-    # Try cache first
-    cached = redis_helper.cache_get(cache_key)
-    if cached:
-        return jsonify({
-            "message": "Data from cache!",
-            "data": cached,
-            "source": "cache"
-        })
+    # Try cache first with better error handling
+    cached = None
+    cache_available = False
+    
+    try:
+        if redis_helper.redis_client:
+            cached = redis_helper.cache_get(cache_key)
+            cache_available = True
+            if cached:
+                return jsonify({
+                    "message": "Data from cache!",
+                    "data": cached,
+                    "source": "cache",
+                    "cache_available": True
+                })
+    except Exception as e:
+        logger.error(f"Redis cache error: {e}")
+        cache_available = False
     
     # Simulate slow database query
     time.sleep(2)
     test_data = {
         "user": current_user,
         "timestamp": time.time(),
-        "message": "This data was expensive to generate!"
+        "message": "This data was expensive to generate!",
+        "cache_status": "available" if cache_available else "unavailable"
     }
     
-    # Cache the result
-    redis_helper.cache_set(cache_key, test_data, 60)  # Cache for 1 minute
+    # Try to cache the result
+    if cache_available:
+        try:
+            redis_helper.cache_set(cache_key, test_data, 60)
+        except Exception as e:
+            logger.error(f"Redis set error: {e}")
     
     return jsonify({
         "message": "Data from database (slow)",
         "data": test_data,
-        "source": "database"
+        "source": "database",
+        "cache_available": cache_available
     })
  
 
@@ -879,6 +895,39 @@ def api_download_image(image_id):
         as_attachment=True,
         download_name=filename
     )
+
+@app.route('/api/debug-redis', methods=['GET'])
+def api_debug_redis():
+    """Debug Redis connection"""
+    try:
+        # Test basic connection
+        if not redis_helper.redis_client:
+            return jsonify({"error": "Redis client is None"}), 500
+            
+        # Test ping
+        ping_result = redis_helper.redis_client.ping()
+        
+        # Test simple set/get
+        test_key = "debug_test"
+        redis_helper.redis_client.set(test_key, "redis_working", ex=10)
+        retrieved = redis_helper.redis_client.get(test_key)
+        
+        return jsonify({
+            "redis_client_exists": redis_helper.redis_client is not None,
+            "ping_success": ping_result,
+            "set_get_test": retrieved.decode() if retrieved else "failed",
+            "redis_host": os.environ.get('REDIS_HOST'),
+            "redis_port": os.environ.get('REDIS_PORT'),
+            "environment_loaded": bool(os.environ.get('REDIS_HOST'))
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "redis_client_exists": redis_helper.redis_client is not None,
+            "redis_host": os.environ.get('REDIS_HOST'),
+            "redis_port": os.environ.get('REDIS_PORT')
+        }), 500
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
