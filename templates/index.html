@@ -194,7 +194,7 @@
 
             <!-- MFA Setup Section -->
             <div class="endpoint">
-                <h3>2. Multi-Factor Authentication Setup</h3>
+                <h3>3. Multi-Factor Authentication Setup</h3>
                 <button onclick="setupTOTP()">Setup TOTP (Authenticator App)</button>
                 <div class="totp-setup" id="totpSetupSection" style="display: none;">
                     <h4>TOTP Setup</h4>
@@ -378,6 +378,16 @@
             const fileCount = this.files.length;
             document.getElementById('fileCount').textContent = `${fileCount} file(s) selected`;
         });
+
+        // Helper: safe innerHTML update
+        function safeUpdate(div, content) {
+            if (div) {
+                div.innerHTML = content;
+            } else {
+                console.error("Missing target div for update:", content.substring(0, 40));
+            }
+        }
+
         
         function testEndpoint(endpoint, method, data = null) {
             const endpointName = endpoint.split('/').pop() || 'root';
@@ -910,7 +920,7 @@
             const performanceDiv = document.getElementById('cache-performance');
             const startTime = Date.now();
             
-            resultDiv.innerHTML = 'Testing cache endpoint...';
+            safeUpdate(resultDiv, 'Testing cache endpoint...');
             
             const token = '{{ token }}';
             
@@ -934,20 +944,20 @@
                 }
                 lastCacheTestTime = responseTime;
                 
-                resultDiv.innerHTML = `
-                    <div style="background: ${data.source === 'cache' ? '#d4edda' : '#fff3cd'}; padding: 10px; border-radius: 4px;">
-                        <strong>Response Time:</strong> ${responseTime}ms<br>
-                        <strong>Source:</strong> ${data.source}<br>
-                        <strong>Data:</strong> ${JSON.stringify(data.data, null, 2)}
-                        ${performanceMsg}
-                    </div>
-                `;
+            safeUpdate(resultDiv, `
+                <div style="background: ${data.source === 'cache' ? '#d4edda' : '#fff3cd'}; padding: 10px; border-radius: 4px;">
+                    <strong>Response Time:</strong> ${responseTime}ms<br>
+                    <strong>Source:</strong> ${data.source}<br>
+                    <strong>Data:</strong> ${JSON.stringify(data.data, null, 2)}
+                    ${performanceMsg}
+                </div>
+            `);
                 
                 // Update performance history
                 updatePerformanceHistory(responseTime, data.source);
             })
             .catch(error => {
-                resultDiv.innerHTML = `Error: ${error}`;
+                safeUpdate(resultDiv, `Error: ${error}`);
             });
         }
 
@@ -980,9 +990,14 @@
 
         function updatePerformanceHistory(responseTime, source) {
             const performanceDiv = document.getElementById('cache-performance');
-            if (!performanceDiv.innerHTML) {
-                performanceDiv.innerHTML = '<h4>Performance History:</h4><ul id="performance-list"></ul>';
+            if (!performanceDiv) {
+                console.error("cache-performance div missing!");
+                return;
             }
+            if (!performanceDiv.innerHTML) {
+                safeUpdate(performanceDiv, '<h4>Performance History:</h4><ul id="performance-list"></ul>');
+            }
+
             
             const list = document.getElementById('performance-list') || performanceDiv.querySelector('ul');
             const listItem = document.createElement('li');
