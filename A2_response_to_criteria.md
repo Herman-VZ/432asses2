@@ -15,7 +15,7 @@ Overview
 
 - **Name:** Hermanus Van Zyl
 - **Student number:** n11957948
-- **Partner name (if applicable):** n11962810
+- **Partner name (if applicable):** n11962810 - Kyle Smith
 - **Application name:** Api Image Filterer
 - **Two line description:** We added persistence and cognito functions as well as much more to out imgage filtering application
 - **EC2 instance name or ID:** assesment 2 Herman Van Zyl
@@ -48,14 +48,16 @@ Overview
 
 ### Third data service
 
-- **AWS service name:** 
-- **What data is being stored?:** 
-- **Why is this service suited to this data?:** 
-- **Why is are the other services used not suitable for this data?:** 
-- **Bucket/instance/table name:**
-- **Video timestamp:**
+- **AWS service name:** AWS Secrets Manager
+- **What data is being stored?:** Access_key_id and secret_access_key database credentials for S3 and DynamoDB access.
+- **Why is this service suited to this data?:** Secrets manager provides secure storage credentials using acess keys and secret keys with S3 and DynamoDB services.
+- **Why is are the other services used not suitable for this data?:** Storing credentials in S3 or DynamoDB would be insecure.
+- **Bucket/instance/table name:** n11962810-asses2-secret
+- **Video timestamp:**~2:20 – 2:40
 - **Relevant files:**
-    - 
+    - secrets_manager_helper.py
+    - s3_helper.py
+    - dynamodb_helper.py
 
 ### S3 Pre-signed URLs
 
@@ -92,60 +94,64 @@ Overview
 
 ### Core - Authentication with Cognito
 
-- **User pool name:** n11957948-user-pool (inferred)
+- **User pool name:** KH-432asses2
 - **How are authentication tokens handled by the client?:** JWT tokens handled through API
-- **Video timestamp:** 
+- **Video timestamp:** ~3:15 - 4:25
 - **Relevant files:**
-    - auth.py
+    - cognito_helper.py
     - app.py
 
 ### Cognito multi-factor authentication
 
-- **What factors are used for authentication:** 
-- **Video timestamp:**
+- **What factors are used for authentication:** Password and TOTP using authenticator apps
+- **Video timestamp:** ~4:25 - 5:30
 - **Relevant files:**
-    - 
+    - cognito_helper.py
+    - app.py
 
 ### Cognito federated identities
 
-- **Identity providers used:**
+- **Identity providers used:** 
 - **Video timestamp:**
 - **Relevant files:**
     - 
 
 ### Cognito groups
 
-- **How are groups used to set permissions?:** 
-- **Video timestamp:**
+- **How are groups used to set permissions?:** (Users, Premium, Admins) including admin commands and premium batch processing for admin and premium groups, with Users having default permissions.
+- **Video timestamp:** ~5:30 - 6:05
 - **Relevant files:**
-    - 
+    - app.py
+    - cognito_helper.py
 
 ### Core - DNS with Route53
 
-- **Subdomain**:  
-- **Video timestamp:**
+- **Subdomain** kh.asses2.cab432.com
+- **Video timestamp:** ~6:05 - 6:25
 
 ### Parameter store
 
 - **Parameter names:** n11957948/batch_size
 - **Video timestamp:** ~2:20 – 2:40
 - **Relevant files:**
-    - param_store.py
+    - parameter_store_helper.py
 
 ### Secrets manager
 
-- **Secrets names:** 
-- **Video timestamp:**
+- **Secrets names:** n11962810-asses2-secret
+- **Video timestamp:** ~6:25 - 6:52
 - **Relevant files:**
-    - 
+    - secrets_manager_helper.py
+    - s3_helper.py
+    - dynamodb_helper.py
 
 ### Infrastructure as code
 
-- **Technology used:**
-- **Services deployed:** S3, DynamoDB, EC2, Redis, Parameter Store
-- **Video timestamp:**
+- **Technology used:** Terraform
+- **Services deployed:** S3, DynamoDB, EC2, Redis, Parameter Store, Route 53
 - **Relevant files:**
-    - 
+    - infrastructure.tf
+    - route53.tf
 
 ### Other (with prior approval only)
 
