@@ -156,6 +156,100 @@ resource "aws_iam_policy" "dynamodb_access_policy" {
   })
 }
 
+# Application Load Balancer
+resource "aws_lb" "app_lb" {
+  name               = "app-load-balancer"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.lb_sg.id]
+  subnets            = [aws_subnet.public_subnet_a.id, aws_subnet.public_subnet_b.id]
+
+  enable_deletion_protection = false
+}
+
+resource "aws_lb_target_group" "app_tg" {
+  name     = "n11957948-autoscale-a3"
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+
+  health_check {
+    enabled             = true
+    path                = "/api/health"
+    port                = "8080"
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+    timeout             = 20
+    interval            = 30
+    matcher             = "200"
+  }
+
+  tags = {
+    qut-username = "n11957948@qut.edu.au"
+    purpose      = "assessment-3"
+  }
+}
+
+# ALB Security Group
+resource "aws_security_group" "lb_sg" {
+  name        = "alb-security-group"
+  description = "Security group for Application Load Balancer"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    qut-username = "n11957948@qut.edu.au"
+    purpose      = "assessment-3"
+  }
+}
+
+# HTTP Listener (Port 80 only)
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.app_lb.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.app_tg.arn
+  }
+
+  tags = {
+    qut-username = "n11957948@qut.edu.au"
+    purpose      = "assessment-3"
+  }
+}
+
+# Register EC2 instance with target group
+resource "aws_lb_target_group_attachment" "app_instance" {
+  target_group_arn = aws_lb_target_group.app_tg.arn
+  target_id        = aws_instance.app_server.id
+  port             = 8080
+}
+
+# Allow ALB to access EC2
+resource "aws_security_group_rule" "ec2_from_alb" {
+  type                     = "ingress"
+  from_port                = 8080
+  to_port                  = 8080
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.lb_sg.id
+  security_group_id        = aws_security_group.ec2_sg.id
+}
+
 # Attach policies to the role
 resource "aws_iam_role_policy_attachment" "s3_access" {
   role       = aws_iam_role.ec2_s3_dynamodb_role.name
@@ -190,3 +284,10 @@ output "dynamodb_table" {
   value = aws_dynamodb_table.image_metadata.name
 }
 
+output "alb_dns_name" {
+  value = aws_lb.app_lb.dns_name
+}
+
+output "load_balancer_url" {
+  value = "http://kh.asses2.cab432.com"
+}
