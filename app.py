@@ -13,6 +13,7 @@ from dynamodb_helper import DynamoDBHelper
 from cognito_helper import CognitoHelper
 import sys
 import boto3
+import requests
 from redis_helper import redis_helper
 from parameter_store_helper import param_helper
 from redis_helper import redis_helper
@@ -85,8 +86,74 @@ def cognito_jwt_required(f):
             return jsonify({"msg": f"Token verification failed: {str(e)}"}), 401
     return decorated_function
 
+def process_single_image_external(file, filter_type, strength, size_multiplier, current_user):
+    try:
+        # Generate a unique ID
+        image_id = str(uuid.uuid4())
+        
+        # Save original image to S3 first
+        file.stream.seek(0)
+        original_image_data = file.stream.read()
+        s3_helper.upload_image(original_image_data, f"original_{image_id}")
+        
+        # Call the external image processing service
+        try:
+            # Points to the second EC2 instance's internal IP
+            processing_service_url = os.environ.get('IMAGE_PROCESSOR_URL', 'http://localhost:8081/process')
+            
+            response = requests.post(
+                processing_service_url,
+                data={
+                    'image_id': image_id,
+                    'filter': filter_type,
+                    'strength': strength,
+                    'size_multiplier': size_multiplier
+                },
+                timeout=60  # Longer timeout for processing
+            )
+            
+            if response.status_code == 200 and response.json().get('success'):
+                logger.info(f"Image {image_id} processed by external service")
+            else:
+                raise Exception("External processing service failed")
+                
+        except Exception as e:
+            logger.warning(f"External processing failed, falling back to local: {e}")
+            # Fallback to local processing
+            return process_single_image_local(file, filter_type, strength, size_multiplier, current_user)
+        
+        # Store metadata in DynamoDB
+        metadata = {
+            'filename': file.filename,
+            'filter': filter_type,
+            'strength': strength,
+            'size_multiplier': size_multiplier,
+            'format': 'jpeg'  # Default, could be detected
+        }
+        db_helper.put_image_metadata(image_id, current_user, metadata)
+        
+        # Generate presigned URL for the frontend
+        image_url = s3_helper.generate_presigned_url(image_id, is_processed=True)
+        
+        return {
+            "filename": file.filename,
+            "message": "Image processed successfully (external service)",
+            "filter": filter_type,
+            "strength": strength,
+            "size_multiplier": size_multiplier,
+            "image_id": image_id,
+            "image_url": image_url
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing image externally: {e}")
+        return {
+            "filename": file.filename,
+            "error": f"Error processing image: {str(e)}"
+        }
+        
 # Helper function to process a single image
-def process_single_image(file, filter_type, strength, size_multiplier, current_user):
+def process_single_image_local(file, filter_type, strength, size_multiplier, current_user):
     try:
         img = Image.open(file.stream)
         original_format = img.format if img.format else 'JPEG'
@@ -601,6 +668,25 @@ def api_get_my_groups():
         "username": current_user,
         "groups": user_groups
     }), 200
+    
+@app.route('/api/microservice-health', methods=['GET'])
+def api_microservice_health():
+    """Check if image processor microservice is healthy"""
+    try:
+        processing_service_url = os.environ.get('IMAGE_PROCESSOR_URL', 'http://localhost:8081/process')
+        response = requests.get(processing_service_url.replace('/process', '/health'), timeout=5)
+        
+        return jsonify({
+            "main_service": "healthy",
+            "image_processor": "healthy" if response.status_code == 200 else "unhealthy",
+            "image_processor_url": processing_service_url
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "main_service": "healthy",
+            "image_processor": "unavailable",
+            "error": str(e)
+        }), 200
 
 # Premium endpoint (require Premium group)
 @app.route('/api/premium/batch-process-large', methods=['POST'])
@@ -671,7 +757,7 @@ def api_filter_image():
         return jsonify({"error": "No selected file"}), 400
     
     if file:
-        result = process_single_image(file, filter_type, strength, size_multiplier, current_user)
+        result = process_single_image_external(file, filter_type, strength, size_multiplier, current_user)
         
         if 'error' in result:
             return jsonify({"error": result['error']}), 500
@@ -734,7 +820,7 @@ def api_batch_filter_images():
                 file.stream.seek(0)
                 futures.append(
                     executor.submit(
-                        process_single_image, 
+                        process_single_image_external, 
                         file, 
                         filter_type, 
                         strength, 

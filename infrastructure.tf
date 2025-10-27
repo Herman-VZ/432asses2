@@ -1,7 +1,148 @@
+# infrastructure.tf
+provider "aws" {
+  region = "ap-southeast-2"
+}
+
+# VPC
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name        = "MainVPC"
+    qut-username = "n11957948@qut.edu.au"
+    purpose     = "assessment-3"
+  }
+}
+
+# Public Subnets
+resource "aws_subnet" "public_subnet_a" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "ap-southeast-2a"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name        = "PublicSubnetA"
+    qut-username = "n11957948@qut.edu.au"
+    purpose     = "assessment-3"
+  }
+}
+
+resource "aws_subnet" "public_subnet_b" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "ap-southeast-2b"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name        = "PublicSubnetB"
+    qut-username = "n11957948@qut.edu.au"
+    purpose     = "assessment-3"
+  }
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name        = "MainIGW"
+    qut-username = "n11957948@qut.edu.au"
+    purpose     = "assessment-3"
+  }
+}
+
+# Route Table
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+
+  tags = {
+    Name        = "PublicRouteTable"
+    qut-username = "n11957948@qut.edu.au"
+    purpose     = "assessment-3"
+  }
+}
+
+# Route Table Associations
+resource "aws_route_table_association" "public_a" {
+  subnet_id      = aws_subnet.public_subnet_a.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_b" {
+  subnet_id      = aws_subnet.public_subnet_b.id
+  route_table_id = aws_route_table.public.id
+}
+
+# Security Group for EC2 instances
+resource "aws_security_group" "ec2_sg" {
+  name        = "ec2-security-group"
+  description = "Security group for EC2 instances"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 8081
+    to_port     = 8081
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    qut-username = "n11957948@qut.edu.au"
+    purpose      = "assessment-3"
+  }
+}
+
+# Security Group rule for EC2 to EC2 communication
+resource "aws_security_group_rule" "ec2_to_ec2" {
+  type                     = "ingress"
+  from_port                = 8081
+  to_port                  = 8081
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.ec2_sg.id
+  security_group_id        = aws_security_group.ec2_sg.id
+  description              = "Allow main app to communicate with image processor"
+}
+
 # S3 Buckets for image storage
 resource "aws_s3_bucket" "original_images" {
   bucket = "n11957948-original-images"
-  
+
   tags = {
     Name        = "OriginalImages"
     Environment = "Assessment2"
@@ -11,14 +152,13 @@ resource "aws_s3_bucket" "original_images" {
 
 resource "aws_s3_bucket" "processed_images" {
   bucket = "n11957948-processed-images"
-  
+
   tags = {
     Name        = "ProcessedImages"
     Environment = "Assessment2"
     Owner       = "n11957948"
   }
 }
-
 
 # Redis ElastiCache Cluster
 resource "aws_elasticache_cluster" "cache" {
@@ -156,6 +296,158 @@ resource "aws_iam_policy" "dynamodb_access_policy" {
   })
 }
 
+# Attach policies to the role
+resource "aws_iam_role_policy_attachment" "s3_access" {
+  role       = aws_iam_role.ec2_s3_dynamodb_role.name
+  policy_arn = aws_iam_policy.s3_access_policy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "dynamodb_access" {
+  role       = aws_iam_role.ec2_s3_dynamodb_role.name
+  policy_arn = aws_iam_policy.dynamodb_access_policy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "secrets_access" {
+  role       = aws_iam_role.ec2_s3_dynamodb_role.name
+  policy_arn = "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
+}
+
+# Instance profile for EC2
+resource "aws_iam_instance_profile" "ec2_instance_profile" {
+  name = "EC2S3DynamoDBInstanceProfile"
+  role = aws_iam_role.ec2_s3_dynamodb_role.name
+}
+
+# Main Web API EC2 Instance
+resource "aws_instance" "app_server" {
+  ami           = "ami-0c02fb55956c7d316"  # Amazon Linux 2
+  instance_type = "t3.micro"
+  subnet_id     = aws_subnet.public_subnet_a.id
+  vpc_security_group_ids = [aws_security_group.ec2_sg.id]
+  iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
+  key_name      = "n11957948"
+
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y python3 python3-pip git
+    
+    # Clone your application
+    git clone https://github.com/Herman-VZ/432asses2.git
+    cd /home/ec2-user/app
+    
+    # Install dependencies
+    pip3 install -r requirements.txt
+    
+    # Set environment variables
+    echo "export AWS_DEFAULT_REGION=ap-southeast-2" >> /home/ec2-user/.bashrc
+    echo "export IMAGE_PROCESSOR_URL=http://${aws_instance.image_processor.private_ip}:8081/process" >> /home/ec2-user/.bashrc
+    echo "export REDIS_HOST=${aws_elasticache_cluster.cache.cache_nodes[0].address}" >> /home/ec2-user/.bashrc
+    echo "export REDIS_PORT=6379" >> /home/ec2-user/.bashrc
+    source /home/ec2-user/.bashrc
+    
+    # Start the main application
+    cd /home/ec2-user/app
+    nohup python3 app.py > /var/log/app.log 2>&1 &
+    
+    # Create systemd service for main app
+    cat > /etc/systemd/system/web-api.service << EOL
+    [Unit]
+    Description=Web API Microservice
+    After=network.target
+    
+    [Service]
+    Type=simple
+    User=ec2-user
+    WorkingDirectory=/home/ec2-user/app
+    Environment=AWS_DEFAULT_REGION=ap-southeast-2
+    Environment=IMAGE_PROCESSOR_URL=http://${aws_instance.image_processor.private_ip}:8081/process
+    Environment=REDIS_HOST=${aws_elasticache_cluster.cache.cache_nodes[0].address}
+    Environment=REDIS_PORT=6379
+    ExecStart=/usr/bin/python3 app.py
+    Restart=always
+    
+    [Install]
+    WantedBy=multi-user.target
+    EOL
+    
+    systemctl daemon-reload
+    systemctl enable web-api.service
+    systemctl start web-api.service
+  EOF
+  )
+
+  tags = {
+    Name        = "WebAPI"
+    qut-username = "n11957948@qut.edu.au"
+    purpose     = "assessment-3-microservice"
+  }
+}
+
+# Second EC2 instance for Image Processing Microservice
+resource "aws_instance" "image_processor" {
+  ami           = "ami-0c02fb55956c7d316"  # Amazon Linux 2
+  instance_type = "t3.micro"
+  subnet_id     = aws_subnet.public_subnet_b.id
+  vpc_security_group_ids = [aws_security_group.ec2_sg.id]
+  iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
+  key_name      = "n11957948"
+
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    yum update -y
+    yum install -y python3 python3-pip git
+    
+    # Clone your application
+    git clone https://github.com/Herman-VZ/432asses2.git
+    cd /home/ec2-user/app
+    
+    # Install dependencies
+    pip3 install -r requirements.txt
+    
+    # Set environment variables
+    echo "export AWS_DEFAULT_REGION=ap-southeast-2" >> /home/ec2-user/.bashrc
+    echo "export ORIGINAL_BUCKET=n11957948-original-images" >> /home/ec2-user/.bashrc
+    echo "export PROCESSED_BUCKET=n11957948-processed-images" >> /home/ec2-user/.bashrc
+    source /home/ec2-user/.bashrc
+    
+    # Start the image processor service
+    cd /home/ec2-user/app
+    nohup python3 image_processor_service.py > /var/log/image_processor.log 2>&1 &
+    
+    # Create systemd service for image processor
+    cat > /etc/systemd/system/image-processor.service << EOL
+    [Unit]
+    Description=Image Processor Microservice
+    After=network.target
+    
+    [Service]
+    Type=simple
+    User=ec2-user
+    WorkingDirectory=/home/ec2-user/app
+    Environment=AWS_DEFAULT_REGION=ap-southeast-2
+    Environment=ORIGINAL_BUCKET=n11957948-original-images
+    Environment=PROCESSED_BUCKET=n11957948-processed-images
+    ExecStart=/usr/bin/python3 image_processor_service.py
+    Restart=always
+    
+    [Install]
+    WantedBy=multi-user.target
+    EOL
+    
+    systemctl daemon-reload
+    systemctl enable image-processor.service
+    systemctl start image-processor.service
+  EOF
+  )
+
+  tags = {
+    Name        = "ImageProcessor"
+    qut-username = "n11957948@qut.edu.au"
+    purpose     = "assessment-3-microservice"
+  }
+}
+
 # Application Load Balancer
 resource "aws_lb" "app_lb" {
   name               = "app-load-balancer"
@@ -165,6 +457,11 @@ resource "aws_lb" "app_lb" {
   subnets            = [aws_subnet.public_subnet_a.id, aws_subnet.public_subnet_b.id]
 
   enable_deletion_protection = false
+
+  tags = {
+    qut-username = "n11957948@qut.edu.au"
+    purpose      = "assessment-3"
+  }
 }
 
 resource "aws_lb_target_group" "app_tg" {
@@ -233,11 +530,17 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# Register EC2 instance with target group
-resource "aws_lb_target_group_attachment" "app_instance" {
+# Register EC2 instances with target group
+resource "aws_lb_target_group_attachment" "web_api" {
   target_group_arn = aws_lb_target_group.app_tg.arn
   target_id        = aws_instance.app_server.id
   port             = 8080
+}
+
+resource "aws_lb_target_group_attachment" "image_processor" {
+  target_group_arn = aws_lb_target_group.app_tg.arn
+  target_id        = aws_instance.image_processor.id
+  port             = 8081
 }
 
 # Allow ALB to access EC2
@@ -250,28 +553,16 @@ resource "aws_security_group_rule" "ec2_from_alb" {
   security_group_id        = aws_security_group.ec2_sg.id
 }
 
-# Attach policies to the role
-resource "aws_iam_role_policy_attachment" "s3_access" {
-  role       = aws_iam_role.ec2_s3_dynamodb_role.name
-  policy_arn = aws_iam_policy.s3_access_policy.arn
+resource "aws_security_group_rule" "ec2_from_alb_8081" {
+  type                     = "ingress"
+  from_port                = 8081
+  to_port                  = 8081
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.lb_sg.id
+  security_group_id        = aws_security_group.ec2_sg.id
 }
 
-resource "aws_iam_role_policy_attachment" "dynamodb_access" {
-  role       = aws_iam_role.ec2_s3_dynamodb_role.name
-  policy_arn = aws_iam_policy.dynamodb_access_policy.arn
-}
-
-resource "aws_iam_role_policy_attachment" "secrets_access" {
-  role       = aws_iam_role.ec2_s3_dynamodb_role.name
-  policy_arn = "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
-}
-
-# Instance profile for EC2
-resource "aws_iam_instance_profile" "ec2_instance_profile" {
-  name = "EC2S3DynamoDBInstanceProfile"
-  role = aws_iam_role.ec2_s3_dynamodb_role.name
-}
-
+# Outputs
 output "s3_original_bucket" {
   value = aws_s3_bucket.original_images.bucket
 }
@@ -290,4 +581,16 @@ output "alb_dns_name" {
 
 output "load_balancer_url" {
   value = "http://kh.asses2.cab432.com"
+}
+
+output "web_api_instance_ip" {
+  value = aws_instance.app_server.public_ip
+}
+
+output "image_processor_instance_ip" {
+  value = aws_instance.image_processor.public_ip
+}
+
+output "image_processor_private_ip" {
+  value = aws_instance.image_processor.private_ip
 }
