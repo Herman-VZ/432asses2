@@ -1,33 +1,26 @@
-# Use lightweight Python base image
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies (including Redis client libraries)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
-    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install AWS CLI
-RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
-    && unzip awscliv2.zip \
-    && ./aws/install \
-    && rm awscliv2.zip
-
-# Copy requirements file
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
-
-# Install Python dependencies (make sure redis is in requirements.txt)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
 
-# Expose port
-EXPOSE 8080
+# Create non-root user
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
 
-# Run with Gunicorn (4 workers, uvicorn worker class)
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "app:app"]
+# Expose ports (both services in same container for simplicity)
+EXPOSE 8080 8081
+
+# Default command (can be overridden in docker-compose)
+CMD ["python", "app.py"]

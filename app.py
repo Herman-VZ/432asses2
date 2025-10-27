@@ -11,6 +11,7 @@ import logging
 from s3_helper import S3Helper
 from dynamodb_helper import DynamoDBHelper
 from cognito_helper import CognitoHelper
+from sqs_helper import SQSHelper
 import sys
 import boto3
 import requests
@@ -86,7 +87,7 @@ def cognito_jwt_required(f):
             return jsonify({"msg": f"Token verification failed: {str(e)}"}), 401
     return decorated_function
 
-def process_single_image_external(file, filter_type, strength, size_multiplier, current_user):
+def process_single_image_microservice(file, filter_type, strength, size_multiplier, current_user):
     try:
         # Generate a unique ID
         image_id = str(uuid.uuid4())
@@ -94,59 +95,123 @@ def process_single_image_external(file, filter_type, strength, size_multiplier, 
         # Save original image to S3 first
         file.stream.seek(0)
         original_image_data = file.stream.read()
-        s3_helper.upload_image(original_image_data, f"original_{image_id}")
+        s3_success = s3_helper.upload_image(original_image_data, f"original_{image_id}")
         
-        # Call the external image processing service
-        try:
-            # Points to the second EC2 instance's internal IP
-            processing_service_url = os.environ.get('IMAGE_PROCESSOR_URL', 'http://localhost:8081/process')
-            
-            response = requests.post(
-                processing_service_url,
-                data={
-                    'image_id': image_id,
-                    'filter': filter_type,
-                    'strength': strength,
-                    'size_multiplier': size_multiplier
-                },
-                timeout=60  # Longer timeout for processing
-            )
-            
-            if response.status_code == 200 and response.json().get('success'):
-                logger.info(f"Image {image_id} processed by external service")
-            else:
-                raise Exception("External processing service failed")
-                
-        except Exception as e:
-            logger.warning(f"External processing failed, falling back to local: {e}")
-            # Fallback to local processing
-            return process_single_image_local(file, filter_type, strength, size_multiplier, current_user)
+        if not s3_success:
+            return {
+                "filename": file.filename,
+                "error": "Failed to upload original image to S3"
+            }
         
-        # Store metadata in DynamoDB
+        # Store initial metadata as "processing"
         metadata = {
             'filename': file.filename,
             'filter': filter_type,
             'strength': strength,
             'size_multiplier': size_multiplier,
-            'format': 'jpeg'  # Default, could be detected
+            'format': 'jpeg',
+            'status': 'processing'
         }
         db_helper.put_image_metadata(image_id, current_user, metadata)
         
-        # Generate presigned URL for the frontend
-        image_url = s3_helper.generate_presigned_url(image_id, is_processed=True)
+        # Call the image processor microservice
+        processing_service_url = os.environ.get('IMAGE_PROCESSOR_URL', 'http://localhost:8081/process')
         
-        return {
-            "filename": file.filename,
-            "message": "Image processed successfully (external service)",
-            "filter": filter_type,
-            "strength": strength,
-            "size_multiplier": size_multiplier,
-            "image_id": image_id,
-            "image_url": image_url
+        # Prepare the request to microservice
+        data = {
+            'image_id': image_id,
+            'filter': filter_type,
+            'strength': strength,
+            'size_multiplier': size_multiplier
         }
         
+        logger.info(f"Sending processing request to microservice: {processing_service_url}")
+        
+        # Send request to image processor microservice
+        response = requests.post(
+            processing_service_url,
+            data=data,
+            timeout=30  # 30 second timeout for processing
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            
+            if result.get('success'):
+                # Update metadata to completed
+                update_expression = "SET #status = :status, #format = :format"
+                expression_values = {
+                    ":status": "completed",
+                    ":format": result.get('format', 'jpeg')
+                }
+                expression_names = {
+                    "#status": "status",
+                    "#format": "format"
+                }
+                
+                db_helper.update_image_metadata(
+                    image_id, 
+                    update_expression, 
+                    expression_values,
+                    expression_names
+                )
+                
+                # Generate presigned URL for the frontend
+                image_url = s3_helper.generate_presigned_url(image_id, is_processed=True)
+                
+                return {
+                    "filename": file.filename,
+                    "message": "Image processed successfully",
+                    "filter": filter_type,
+                    "strength": strength,
+                    "size_multiplier": size_multiplier,
+                    "image_id": image_id,
+                    "image_url": image_url,
+                    "status": "completed"
+                }
+            else:
+                # Update metadata to failed
+                update_expression = "SET #status = :status"
+                expression_values = {":status": "failed"}
+                expression_names = {"#status": "status"}
+                
+                db_helper.update_image_metadata(
+                    image_id, 
+                    update_expression, 
+                    expression_values,
+                    expression_names
+                )
+                
+                return {
+                    "filename": file.filename,
+                    "error": f"Image processing failed: {result.get('error', 'Unknown error')}"
+                }
+        else:
+            # Update metadata to failed
+            update_expression = "SET #status = :status"
+            expression_values = {":status": "failed"}
+            expression_names = {"#status": "status"}
+            
+            db_helper.update_image_metadata(
+                image_id, 
+                update_expression, 
+                expression_values,
+                expression_names
+            )
+            
+            return {
+                "filename": file.filename,
+                "error": f"Microservice error: {response.status_code} - {response.text}"
+            }
+            
+    except requests.exceptions.Timeout:
+        logger.error(f"Timeout processing image {image_id}")
+        return {
+            "filename": file.filename,
+            "error": "Image processing timed out"
+        }
     except Exception as e:
-        logger.error(f"Error processing image externally: {e}")
+        logger.error(f"Error processing image via microservice: {e}")
         return {
             "filename": file.filename,
             "error": f"Error processing image: {str(e)}"
@@ -757,20 +822,22 @@ def api_filter_image():
         return jsonify({"error": "No selected file"}), 400
     
     if file:
-        result = process_single_image_external(file, filter_type, strength, size_multiplier, current_user)
+        # Use microservice instead of SQS
+        result = process_single_image_microservice(file, filter_type, strength, size_multiplier, current_user)
         
         if 'error' in result:
             return jsonify({"error": result['error']}), 500
         else:
             return jsonify({
-                "message": "Image processed successfully",
+                "message": result['message'],
                 "user": current_user,
                 "user_groups": user_groups,
                 "filter": result['filter'],
                 "strength": result['strength'],
                 "size_multiplier": result['size_multiplier'],
                 "image_id": result['image_id'],
-                "image_url": result['image_url']
+                "image_url": result.get('image_url'),
+                "status": result.get('status', 'completed')
             }), 200
 
 @app.route('/api/batch-filter-images', methods=['POST'])
@@ -820,7 +887,7 @@ def api_batch_filter_images():
                 file.stream.seek(0)
                 futures.append(
                     executor.submit(
-                        process_single_image_external, 
+                        process_single_image_microservice, 
                         file, 
                         filter_type, 
                         strength, 

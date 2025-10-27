@@ -327,7 +327,7 @@ resource "aws_instance" "app_server" {
   iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
   key_name      = "n11957948"
 
-  user_data = base64encode(<<-EOF
+  user_data_base64 = base64encode(<<-EOF
     #!/bin/bash
     yum update -y
     yum install -y python3 python3-pip git
@@ -393,7 +393,7 @@ resource "aws_instance" "image_processor" {
   iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
   key_name      = "n11957948"
 
-  user_data = base64encode(<<-EOF
+  user_data_base64 = base64encode(<<-EOF
     #!/bin/bash
     yum update -y
     yum install -y python3 python3-pip git

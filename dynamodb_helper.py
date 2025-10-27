@@ -114,6 +114,7 @@ class DynamoDBHelper:
                 "Strength": Decimal(str(metadata.get("strength", 0))),
                 "SizeMultiplier": Decimal(str(metadata.get("size_multiplier", 1.0))),
                 "Format": metadata.get("format", "jpeg"),
+                "Status": metadata.get("status", "queued"),        
                 "CreatedAt": datetime.utcnow().isoformat()
             }
             self.table.put_item(Item=item)
@@ -186,4 +187,25 @@ class DynamoDBHelper:
         except Exception as e:
             logger.warning(f"Failed to get credentials from Secrets Manager: {e}")
             # Fall back to default credentials
+            return None
+        
+        
+    def update_image_metadata(self, image_id, update_expression, expression_values, expression_attribute_names=None):
+        """Update image metadata with custom expressions"""
+        try:
+            params = {
+                'Key': {'ImageID': str(image_id)},
+                'UpdateExpression': update_expression,
+                'ExpressionAttributeValues': expression_values,
+                'ReturnValues': "UPDATED_NEW"
+            }
+            
+            if expression_attribute_names:
+                params['ExpressionAttributeNames'] = expression_attribute_names
+            
+            response = self.table.update_item(**params)
+            logger.info(f"Successfully updated metadata for image {image_id}")
+            return response.get('Attributes', {})
+        except ClientError as e:
+            logger.error(f"Error updating item in DynamoDB: {e}")
             return None

@@ -1,17 +1,40 @@
 version: '3.8'
 services:
-  app:
+  webapp:
     build: .
     ports:
       - "8080:8080"
     env_file:
-      - cognito.env  # Change this line
-    depends_on:
-      - redis
-    # Add Redis environment variables since they're not in cognito.env
+      - cognito.env
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - IMAGE_PROCESSOR_URL=http://image-processor:8081/process
+    depends_on:
+      - redis
+      - image-processor
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  image-processor:
+    build: .
+    ports:
+      - "8081:8081"
+    env_file:
+      - cognito.env
+    environment:
+      - AWS_DEFAULT_REGION=ap-southeast-2
+    command: python image_processor.py
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   redis:
     image: redis:7-alpine
@@ -20,6 +43,11 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   redis_data:
