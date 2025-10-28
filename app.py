@@ -115,7 +115,7 @@ def process_single_image_microservice(file, filter_type, strength, size_multipli
         db_helper.put_image_metadata(image_id, current_user, metadata)
         
         # Call the image processor microservice
-        processing_service_url = os.environ.get('IMAGE_PROCESSOR_URL', 'http://localhost:8081/process')
+        processing_service_url = os.environ.get('IMAGE_PROCESSOR_URL', 'http://localhost:8080/process')
         
         # Prepare the request to microservice
         data = {
@@ -738,7 +738,7 @@ def api_get_my_groups():
 def api_microservice_health():
     """Check if image processor microservice is healthy"""
     try:
-        processing_service_url = os.environ.get('IMAGE_PROCESSOR_URL', 'http://localhost:8081/process')
+        processing_service_url = os.environ.get('IMAGE_PROCESSOR_URL', 'http://localhost:8080/process')
         response = requests.get(processing_service_url.replace('/process', '/health'), timeout=5)
         
         return jsonify({

@@ -1,6 +1,6 @@
 resource "aws_route53_record" "api" {
   zone_id = "Z02680423BHWEVRU2JZDQ"
-  name    = "kh.asses2.cab432.com"
+  name    = "kh.asses3.cab432.com"
   type    = "A"
 
   alias {

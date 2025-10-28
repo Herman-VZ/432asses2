@@ -17,14 +17,6 @@ s3 = boto3.client('s3')
 ORIGINAL_BUCKET = 'n11957948-original-images'
 PROCESSED_BUCKET = 'n11957948-processed-images'
 
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({
-        "status": "healthy", 
-        "service": "image-processor",
-        "timestamp": time.time()
-    })
-
 @app.route('/process', methods=['POST'])
 def process_image():
     start_time = time.time()
@@ -144,6 +136,31 @@ def stats():
             "processed": PROCESSED_BUCKET
         }
     })
+    
+@app.route('/api/health')
+def api_health():
+    """Real health check that verifies the service can actually work"""
+    try:
+        # Test S3 connectivity
+        s3 = boto3.client('s3')
+        s3.list_buckets()
+        
+        # Test we can access our buckets
+        s3.head_bucket(Bucket=ORIGINAL_BUCKET)
+        s3.head_bucket(Bucket=PROCESSED_BUCKET)
+        
+        return jsonify({
+            "status": "healthy", 
+            "service": "image-processor",
+            "s3_connected": True,
+            "buckets_accessible": True
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "service": "image-processor", 
+            "error": str(e)
+        }), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8081, debug=False)
+    app.run(host='0.0.0.0', port=8080, debug=False)
